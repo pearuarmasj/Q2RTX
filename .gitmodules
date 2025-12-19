@@ -23,3 +23,11 @@
 [submodule "extern/openal-soft"]
 	path = extern/openal-soft
 	url = https://github.com/kcat/openal-soft.git
+[submodule "extern/Area-ReSTIR"]
+	path = extern/Area-ReSTIR
+	url = https://github.com/guiqi134/Area-ReSTIR.git
+	ignore = dirty
+[submodule "extern/RTX-Kit"]
+	path = extern/RTX-Kit
+	url = https://github.com/NVIDIA-RTX/RTX-Kit
+	ignore = dirty
