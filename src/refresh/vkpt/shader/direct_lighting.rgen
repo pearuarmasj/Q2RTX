@@ -1,0 +1,317 @@
+/*
+Copyright (C) 2018 Christoph Schied
+Copyright (C) 2019, NVIDIA CORPORATION. All rights reserved.
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// ========================================================================== //
+// This rgen shader computes direct lighting for the first opaque surface. 
+// The parameters of that surface are loaded from the G-buffer, stored there
+// previously by the `primary_rays.rgen` and `reflect_refract.rgen` shaders.
+//
+// See `path_tracer.h` for an overview of the path tracer.
+// ========================================================================== //
+
+#version 460
+#extension GL_GOOGLE_include_directive    : enable
+#pragma optionNV(unroll all)
+
+#define ENABLE_SHADOW_CAUSTICS
+#include "path_tracer_rgen.h"
+#include "projection.glsl"
+
+layout(constant_id = 0) const uint spec_enable_caustics = 0;
+
+void
+direct_lighting(
+	ivec2 ipos,
+	bool is_odd_checkerboard,
+	out vec3 high_freq,
+	out vec3 o_specular,
+	out uint restir_reservoir_id,
+	out uvec2 restir_reservoir_packed)
+{
+	high_freq = vec3(0);
+	o_specular = vec3(0);
+	restir_reservoir_id = 0u;
+	restir_reservoir_packed = uvec2(0);
+
+	rng_seed = texelFetch(TEX_ASVGF_RNG_SEED_A, ipos, 0).r;
+
+
+	vec4 position_material = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0);
+	
+	vec3 position   = position_material.xyz;
+	uint material_id = floatBitsToUint(position_material.w);
+
+	// don't compute lighting for invalid surfaces
+	if(material_id == 0)
+		return;
+
+	vec4 view_direction = texelFetch(TEX_PT_VIEW_DIRECTION, ipos, 0);
+	vec3 normal = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+    vec3 geo_normal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_A, ipos, 0).x);
+    vec4 primary_base_color = texelFetch(TEX_PT_BASE_COLOR_A, ipos, 0);
+    float primary_specular_factor = primary_base_color.a;
+    vec2 metal_rough = texelFetch(TEX_PT_METALLIC_A, ipos, 0).xy;
+    float primary_metallic = metal_rough.x;
+	float primary_roughness = metal_rough.y;
+	uint cluster_idx = texelFetch(TEX_PT_CLUSTER_A, ipos, 0).x;
+	if(cluster_idx == 0xffff) cluster_idx = ~0u; // because the image is uint16
+
+	bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
+	int primary_medium = int((material_id & MATERIAL_LIGHT_STYLE_MASK) >> MATERIAL_LIGHT_STYLE_SHIFT);
+
+	int shadow_cull_mask = SHADOW_RAY_CULL_MASK;
+
+	if(global_ubo.first_person_model != 0 && !primary_is_weapon)
+		shadow_cull_mask |= AS_FLAG_VIEWER_MODELS;
+	else
+		shadow_cull_mask |= AS_FLAG_VIEWER_WEAPON;
+
+	float direct_specular_weight = smoothstep(
+		global_ubo.pt_direct_roughness_threshold - 0.02, 
+		global_ubo.pt_direct_roughness_threshold + 0.02, 
+		primary_roughness);
+
+	bool is_gradient = get_is_gradient(ipos);
+
+    vec3 primary_albedo, primary_base_reflectivity;
+    get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
+
+	vec3 direct_diffuse, direct_specular;
+	float restir_dbg_w_sum = 0;
+	float restir_dbg_w_selected = 0;
+	float restir_dbg_scale = 0;
+	int restir_dbg_M = 0;
+	int restir_dbg_kind = 0;
+	int restir_dbg_light_id = -1;
+	int restir_dbg_source = -1;
+	uint restir_id_packed = 0u;
+	uvec2 restir_res_packed = uvec2(0);
+
+	if(global_ubo.pt_restir_enable != 0)
+	{
+		get_direct_illumination_restir_di(
+			ipos,
+			int(view_direction.w),
+			position,
+			normal,
+			geo_normal,
+			cluster_idx,
+			material_id,
+			shadow_cull_mask,
+			view_direction.xyz,
+			primary_albedo,
+			primary_base_reflectivity,
+			primary_specular_factor,
+			primary_roughness,
+			primary_medium,
+			spec_enable_caustics != 0,
+			direct_specular_weight,
+			global_ubo.pt_direct_polygon_lights > 0,
+			is_gradient,
+			0,
+			direct_diffuse,
+			direct_specular,
+			restir_id_packed,
+			restir_res_packed,
+			restir_dbg_w_sum,
+			restir_dbg_w_selected,
+			restir_dbg_scale,
+			restir_dbg_M,
+			restir_dbg_kind,
+			restir_dbg_light_id,
+			restir_dbg_source);
+
+		// Keep dynamic light direct lighting active when ReSTIR is enabled (ReSTIR currently
+		// only covers polygonal/sky lights).
+		if(global_ubo.pt_direct_dyn_lights > 0)
+		{
+			vec3 dyn_diffuse, dyn_specular;
+			get_direct_illumination(
+				position,
+				normal,
+				geo_normal,
+				cluster_idx,
+				material_id,
+				shadow_cull_mask,
+				view_direction.xyz,
+				primary_albedo,
+				primary_base_reflectivity,
+				primary_specular_factor,
+				primary_roughness,
+				primary_medium,
+				spec_enable_caustics != 0,
+				direct_specular_weight,
+				false,
+				true,
+				is_gradient,
+				0,
+				dyn_diffuse,
+				dyn_specular);
+			direct_diffuse += dyn_diffuse;
+			direct_specular += dyn_specular;
+		}
+	}
+	else
+	{
+		get_direct_illumination(
+			position, 
+			normal, 
+			geo_normal, 
+			cluster_idx, 
+			material_id, 
+			shadow_cull_mask, 
+			view_direction.xyz, 
+			primary_albedo,
+			primary_base_reflectivity,
+			primary_specular_factor,
+			primary_roughness, 
+			primary_medium, 
+			spec_enable_caustics != 0, 
+			direct_specular_weight, 
+			global_ubo.pt_direct_polygon_lights > 0,
+			global_ubo.pt_direct_dyn_lights > 0,
+			is_gradient,
+			0,
+			direct_diffuse,
+			direct_specular);
+	}
+
+	// Store the selected reservoir sample for temporal/spatial reuse.
+	if(global_ubo.pt_restir_enable != 0)
+	{
+		restir_reservoir_id = restir_id_packed;
+		restir_reservoir_packed = restir_res_packed;
+	}
+
+	// Optional ReSTIR DI debug views (override output).
+	int restir_debug_view = int(global_ubo.pt_restir_debug_view + 0.5);
+	if(global_ubo.pt_restir_enable != 0 && restir_debug_view != 0)
+	{
+		vec3 dbg = vec3(0);
+		if(restir_debug_view == 1)
+		{
+			// Light kind/id visualization.
+			float idf = float(max(restir_dbg_light_id, 0));
+			float h = fract(idf * 0.61803398875);
+			vec3 id_color = vec3(fract(h * 1.0), fract(h * 3.0), fract(h * 7.0));
+			vec3 kind_color = (restir_dbg_kind == 1) ? vec3(1, 0.2, 0.2) : (restir_dbg_kind == 2) ? vec3(0.2, 0.2, 1) : vec3(0);
+			dbg = mix(kind_color, id_color, 0.5);
+		}
+		else if(restir_debug_view == 2)
+		{
+			float x = clamp(log2(1.0 + restir_dbg_w_sum) / 12.0, 0.0, 1.0);
+			dbg = viridis_quintic(x);
+		}
+		else if(restir_debug_view == 3)
+		{
+			float x = clamp(restir_dbg_scale / 4.0, 0.0, 1.0);
+			dbg = viridis_quintic(x);
+		}
+		else if(restir_debug_view == 4)
+		{
+			float x = clamp(restir_dbg_w_selected / max(restir_dbg_w_sum, 1e-6), 0.0, 1.0);
+			dbg = viridis_quintic(x);
+		}
+		else if(restir_debug_view == 5)
+		{
+			float x = clamp(float(restir_dbg_M) / 32.0, 0.0, 1.0);
+			dbg = viridis_quintic(x);
+		}
+		else if(restir_debug_view == 6)
+		{
+			// Selection source visualization.
+			//  0 = current candidates, 1 = temporal reuse, 2 = spatial reuse
+			if(restir_dbg_source == 0)
+				dbg = vec3(0.2, 1.0, 0.2);
+			else if(restir_dbg_source == 1)
+				dbg = vec3(1.0, 0.2, 0.2);
+			else if(restir_dbg_source == 2)
+				dbg = vec3(0.2, 0.2, 1.0);
+			else
+				dbg = vec3(0.0);
+		}
+
+		high_freq = clamp_output(dbg);
+		o_specular = vec3(0);
+	}
+	else
+	{
+		high_freq += direct_diffuse;
+		o_specular += direct_specular;
+	}
+	
+	// Sun lighting is now part of ReSTIR DI when enabled; avoid double-counting.
+	if(global_ubo.pt_direct_sun_light != 0 && global_ubo.pt_restir_enable == 0)
+	{
+		vec3 direct_sun_diffuse, direct_sun_specular;
+		get_sunlight(
+			cluster_idx,
+			material_id,
+			position,
+			normal,
+			geo_normal,
+			view_direction.xyz,
+			primary_base_reflectivity,
+			primary_specular_factor,
+			primary_roughness,
+			primary_medium,
+			spec_enable_caustics != 0,
+			direct_sun_diffuse,
+			direct_sun_specular,
+			shadow_cull_mask);
+
+		high_freq += direct_sun_diffuse;
+		o_specular += direct_sun_specular;
+	}
+
+	o_specular = demodulate_specular(primary_base_reflectivity, o_specular);
+
+	high_freq = clamp_output(high_freq);
+	o_specular = clamp_output(o_specular);
+
+	// Ray Reconstruction data outputs
+	imageStore(IMG_PT_SPECULAR, ipos, vec4(primary_specular_factor, 0, 0, 0));
+	imageStore(IMG_PT_MATERIALID, ipos, vec4(float(material_id), 0, 0, 0));
+	imageStore(IMG_PT_SPECULAR_ALBEDO, ipos, vec4(primary_base_reflectivity, 0));
+}
+
+void
+main() 
+{
+	ivec2 ipos = ivec2(rt_LaunchID.xy);
+	if(rt_LaunchID.z != 0)
+		ipos.x += global_ubo.width / 2;
+
+	bool is_odd_checkerboard = (rt_LaunchID.z != 0) || (push_constants.gpu_index == 1);
+
+	vec3 high_freq, specular;
+	uint restir_reservoir_id;
+	uvec2 restir_reservoir_packed;
+	direct_lighting(ipos, is_odd_checkerboard, high_freq, specular, restir_reservoir_id, restir_reservoir_packed);
+
+	high_freq *= STORAGE_SCALE_HF;
+	specular *= STORAGE_SCALE_SPEC;
+	
+	imageStore(IMG_PT_COLOR_LF_SH, ipos, vec4(0));
+	imageStore(IMG_PT_COLOR_LF_COCG, ipos, vec4(0));
+	imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(high_freq)));
+	imageStore(IMG_PT_COLOR_SPEC, ipos, uvec4(packRGBE(specular)));
+	imageStore(IMG_PT_RESTIR_DI_ID_A, ipos, uvec4(restir_reservoir_id, 0, 0, 0));
+	imageStore(IMG_PT_RESTIR_DI_RES_A, ipos, uvec4(restir_reservoir_packed.x, restir_reservoir_packed.y, 0, 0));
+}

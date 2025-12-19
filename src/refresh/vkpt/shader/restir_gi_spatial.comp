@@ -1,0 +1,202 @@
+/*
+Copyright (C) 2024
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program; if not, write to the Free Software Foundation, Inc.,
+51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+*/
+
+// ========================================================================== //
+// ReSTIR GI Spatial Resampling
+//
+// Reads temporally resampled reservoirs and performs spatial reuse by
+// combining with neighboring pixel reservoirs.
+// ========================================================================== //
+
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_nonuniform_qualifier : enable
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define GLOBAL_UBO_DESC_SET_IDX 0
+#include "global_ubo.h"
+
+#define GLOBAL_TEXTURES_DESC_SET_IDX 1
+#include "global_textures.h"
+
+#include "utils.glsl"
+#include "tiny_encryption_algorithm.h"
+#include "restir_gi.glsl"
+
+// RNG for spatial resampling using TEA
+uvec2 rng_state;
+
+float get_rng_local(uint dimension)
+{
+    rng_state = encrypt_tea(uvec2(rng_state.x, rng_state.y + dimension));
+    return float(rng_state.x) / float(0xFFFFFFFFu);
+}
+
+void main()
+{
+    ivec2 ipos = ivec2(gl_GlobalInvocationID.xy);
+    
+    if (ipos.x >= global_ubo.width || ipos.y >= global_ubo.height)
+        return;
+    
+    // Check if ReSTIR GI spatial is enabled
+    if (global_ubo.pt_restir_gi_enable == 0 || global_ubo.pt_restir_gi_spatial == 0)
+    {
+        // Just pass through (ping-pong swap handled by C code)
+        return;
+    }
+    
+    // Initialize RNG with different seed than temporal pass
+    rng_state = encrypt_tea(uvec2(ipos.x | (ipos.y << 16), global_ubo.current_frame_idx * 0x9E3779B9u));
+    
+    // -------------------------------------------------------------------------
+    // Load current surface data
+    // -------------------------------------------------------------------------
+    
+    vec4 pos_mat = texelFetch(TEX_PT_SHADING_POSITION, ipos, 0);
+    vec3 currentPos = pos_mat.xyz;
+    uint material_id = floatBitsToUint(pos_mat.w);
+    
+    // No valid surface - nothing to do
+    if (material_id == 0)
+    {
+        return;
+    }
+    
+    vec3 currentNormal = decode_normal(texelFetch(TEX_PT_NORMAL_A, ipos, 0).x);
+    float currentDepth = texelFetch(TEX_PT_VIEW_DEPTH_A, ipos, 0).x;
+    
+    // -------------------------------------------------------------------------
+    // Load the current pixel's reservoir (from temporal pass)
+    // Note: We read from A (temporal output), write to A (in-place update)
+    // The C code will handle the ping-pong swap after this pass
+    // -------------------------------------------------------------------------
+    
+    RestirGIReservoir centerReservoir = restirGI_loadReservoirB(ipos);  // Actually reads temporal output
+    RestirGIReservoir outputReservoir = centerReservoir;
+    
+    // Track MIS normalization
+    float selectedTargetPdf = 0.0;
+    if (restirGI_isValid(centerReservoir))
+    {
+        selectedTargetPdf = restirGI_getTargetPdf(
+            centerReservoir.position,
+            centerReservoir.radiance,
+            currentPos,
+            currentNormal);
+    }
+    
+    uint totalM = centerReservoir.M;
+    
+    // -------------------------------------------------------------------------
+    // Spatial resampling - sample from neighbors
+    // -------------------------------------------------------------------------
+    
+    float spatialRadius = global_ubo.pt_restir_gi_spatial_radius;
+    int numNeighbors = int(global_ubo.pt_restir_gi_spatial_neighbors);
+    
+    for (int i = 0; i < numNeighbors; i++)
+    {
+        // Get offset using spiral pattern
+        ivec2 offset = restirGI_getSpatialOffset(i, spatialRadius);
+        ivec2 neighborPos = ipos + offset;
+        
+        // Skip out-of-bounds neighbors
+        if (neighborPos.x < 0 || neighborPos.x >= global_ubo.width ||
+            neighborPos.y < 0 || neighborPos.y >= global_ubo.height)
+            continue;
+        
+        // Load neighbor surface data
+        vec4 neighborPosMat = texelFetch(TEX_PT_SHADING_POSITION, neighborPos, 0);
+        vec3 neighborSurfacePos = neighborPosMat.xyz;
+        uint neighborMaterial = floatBitsToUint(neighborPosMat.w);
+        
+        // Skip invalid surfaces
+        if (neighborMaterial == 0)
+            continue;
+        
+        vec3 neighborNormal = decode_normal(texelFetch(TEX_PT_NORMAL_A, neighborPos, 0).x);
+        float neighborDepth = texelFetch(TEX_PT_VIEW_DEPTH_A, neighborPos, 0).x;
+        
+        // Check surface similarity
+        bool surfaceMatch = restirGI_areSurfacesSimilar(
+            currentNormal, neighborNormal,
+            currentDepth, neighborDepth,
+            global_ubo.pt_restir_gi_normal_threshold,
+            global_ubo.pt_restir_gi_depth_threshold);
+        
+        if (!surfaceMatch)
+            continue;
+        
+        // Load neighbor's reservoir (from temporal pass output)
+        RestirGIReservoir neighborReservoir = restirGI_loadReservoirB(neighborPos);
+        
+        if (!restirGI_isValid(neighborReservoir))
+            continue;
+        
+        // Calculate target PDF for neighbor's sample at current surface
+        float targetPdf = restirGI_getTargetPdf(
+            neighborReservoir.position,
+            neighborReservoir.radiance,
+            currentPos,
+            currentNormal);
+        
+        if (targetPdf <= 0.0)
+            continue;
+        
+        // Calculate Jacobian for the domain transformation
+        float jacobian = restirGI_calculateJacobian(currentPos, neighborSurfacePos, neighborReservoir);
+        
+        if (!restirGI_validateJacobian(jacobian))
+            continue;
+        
+        // Prepare neighbor reservoir for combination
+        RestirGIReservoir tempNeighbor = neighborReservoir;
+        tempNeighbor.weightSum *= jacobian;
+        
+        // Combine reservoirs
+        float rng = get_rng_local(uint(i));
+        bool selected = restirGI_combineReservoirs(outputReservoir, tempNeighbor, rng, targetPdf);
+        
+        if (selected)
+        {
+            selectedTargetPdf = targetPdf;
+        }
+        
+        totalM += neighborReservoir.M;
+    }
+    
+    // -------------------------------------------------------------------------
+    // Finalize with MIS normalization
+    // -------------------------------------------------------------------------
+    
+    if (restirGI_isValid(outputReservoir))
+    {
+        // MIS normalization: account for all samples that could have produced this sample
+        // Use 1/M normalization (pairwise MIS)
+        float denominator = selectedTargetPdf * float(totalM);
+        restirGI_finalizeResampling(outputReservoir, 1.0, denominator);
+        
+        // Preserve age from selected sample (already set during combination)
+        outputReservoir.M = min(totalM, uint(global_ubo.pt_restir_gi_max_history));
+    }
+    
+    // Store output reservoir
+    restirGI_storeReservoirA(ipos, outputReservoir);
+}

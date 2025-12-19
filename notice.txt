@@ -1,0 +1,82 @@
+  Quake II RTX
+  Copyright (C) 2019-2025, NVIDIA CORPORATION
+  All rights reserved.
+
+  https://github.com/NVIDIA/Q2RTX
+
+NVIDIA, the NVIDIA logo, GeForce, GeForce GTX, GeForce RTX, NVIDIA GameWorks,
+and NVIDIA RTX are trademarks and/or registered trademarks of NVIDIA Corporation
+in the U.S. and/or other countries. Other company and product names may be
+trademarks of the respective companies with which they are associated.
+NVIDIA's trademarks may be used publicly with permission only from NVIDIA,
+and nothing in this Agreement shall be construed as granting such permission.
+Fair use of NVIDIA's trademarks in advertising and promotion of NVIDIA products
+requires proper acknowledgment;
+
+https://www.nvidia.com/content/dam/en-zz/Solutions/about-us/documents/NVIDIA-Trademark-and-Logo-Usage-Guidelines.pdf
+
+
+Third Party IP
+==============
+
+This product is based on or incorporates materials from the sources listed below
+(third party IP). Such licenses and notices are provided for informational
+purposes only.
+
+* Quake II
+    Copyright (C) 1997-2001 Id Software, Inc.
+    licensed under the terms of the GPLv2.
+    https://github.com/id-Software/Quake-2
+
+* Q2PRO
+    Copyright (C) 2003-2011 Andrey Nazarov
+    licensed under the terms of the GPLv2.
+    https://github.com/skullernet/q2pro
+
+* Q2VKPT
+    Copyright (C) 2018 Christoph Schied
+    licensed under the terms of the GPLv2.
+    https://github.com/cschied/q2vkpt
+
+* Yamagi Quake II
+    Copyright (c) 2010-2019 "Yamagi Burmeister"
+    licensed under the terms of the GPLv2.
+    https://github.com/yquake2/yquake2
+
+* Q2XP mod pack
+    https://www.moddb.com/mods/quake-2-xp
+    used with permission from Arthur Galaktionov
+
+* Quake II textures and derivative works
+    Copyright (c) 2019 id Software LLC, a ZeniMax Media company
+    All Rights Reserved.    
+
+* FidelityFX Super Resolution 1.0 (FSR) Shader and Sample Code
+    Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+    Licensed under the terms of the "MIT" or "Expat" license, see below.
+    https://github.com/GPUOpen-Effects/FidelityFX-CAS
+
+Roughness and specular channels were adjusted in texture maps to work with
+the Quake II RTX engine.
+
+FidelityFX Super Resolution 1.0 (FSR) License Notice
+----------------------------------------------------
+Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
