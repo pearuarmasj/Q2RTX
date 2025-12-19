@@ -42,10 +42,11 @@ music/
 
 q2config.cfg
 save
-*/docs
+/doc
 baseq2/**/*.txt
 !baseq2/*.txt
 !baseq2/maps/sky/*.txt
 !baseq2/pics/flashlight_profile.png
 *.github
 Additional sources for help
+.serena
