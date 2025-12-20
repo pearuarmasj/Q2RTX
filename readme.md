@@ -1,16 +1,64 @@
 # Quake II RTX
 
-## Project Discontinued
+## ~~Project Discontinued~~
 
-**This repository is no longer maintained.**
+~~**This repository is no longer maintained.**~~
 
-If you're looking for a downloadable installer for Quake II RTX, please visit the [Releases](https://github.com/NVIDIA/Q2RTX/releases) page.
+~~If you're looking for a downloadable installer for Quake II RTX, please visit the [Releases](https://github.com/NVIDIA/Q2RTX/releases) page.~~
 
-If you would like to make some improvements, feel free to fork this repository or look for other community projects based on Quake II RTX.
+~~If you would like to make some improvements, feel free to fork this repository or look for other community projects based on Quake II RTX.~~
 
-<br>
-<br>
-<br>
+---
+
+**NVIDIA:** "Project discontinued. Feel free to fork it."
+
+**Me:** "Don't mind if I do."
+
+This fork refuses to let a perfectly good path tracer gather dust. While NVIDIA has moved on to bigger things (presumably counting money and glazing AI and arguably committing illegal activites bypassing import bans, and much more), some of us still think there's a lot left to be done with Q2RTX.
+
+---
+
+## Fork Goals: Making Q2RTX Less Noisy (Literally)
+
+This fork aims to modernize the renderer with state-of-the-art sampling and light transport techniques, as well as other stuff like DLSS. Because why settle for "good enough" when we can have "actually good"?
+
+### Phase 1: ReSTIR DI (Direct Illumination)
+- Replace/augment current direct-light sampling (NEE) with **ReSTIR DI** reservoirs
+- Stable, debuggable, reproducible results
+- Comparable or better noise vs baseline at same spp
+- No architectural dead-ends for future work (we're thinking ahead, unlike *some* companies)
+
+### Phase 2: ReSTIR DI - Production Ready
+- Temporal reuse + spatial reuse (Currently very rough though)
+- Full light set support: point, spot, emissive triangles
+- Robustness: disocclusion handling, motion, dynamic lights, camera cuts
+
+## Phase 3: Modern DLSS implementation along with Ray Reconstruction
+- Ray Reconstruction - Allows samples and paths of light to literally travel further and be far better resolved (higher resolution output especially in reflections and such) because of way more intelligent AI algorithms that can resolve light transport data way better.
+Visual uplift is already quite substantial even with just that. Should also naturally mean a substantial reduction in noise.
+- DLSS - Also modern DLSS by extension alongside that.
+
+### Phase 4+: The Ambitious Stuff
+- **ReSTIR GI** - because indirect lighting deserves love too
+- **BDPT / other integrator swaps** - opening the door to bidirectional path tracing and beyond
+- Whatever else seems fun when we get there
+
+### Architectural Improvements (In Progress)
+- Clean Light abstraction (sample, pdf, eval)
+- BSDF hooks with proper sample/eval/pdf split
+- Documented PDF conventions (solid angle measure, because we're not savages)
+- Scene query layer for future integrator swaps
+- Debug toggles for everything (`pt_restir_enable`, `pt_restir_temporal`, `pt_restir_spatial`, etc.)
+
+---
+
+## Current Status
+
+**Build System:** Reworked to output to a clean `game/` folder.
+
+**ReSTIR Implementation:** In progress. DI is mostly ready and even without spatiotemporal reuse, the results are already quite incredible.
+
+---
 
 ## Original README
 

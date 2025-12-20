@@ -51,10 +51,15 @@ float get_rng_local(uint dimension)
 void main()
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID.xy);
-    
+
     if (ipos.x >= global_ubo.width || ipos.y >= global_ubo.height)
         return;
-    
+
+    // Debug views 20+ need raw data from indirect_lighting.rgen - pass through
+    int debugView = int(global_ubo.pt_restir_gi_debug_view);
+    if (debugView >= 20)
+        return;
+
     // Check if ReSTIR GI spatial is enabled
     if (global_ubo.pt_restir_gi_enable == 0 || global_ubo.pt_restir_gi_spatial == 0)
     {
@@ -84,13 +89,12 @@ void main()
     
     // -------------------------------------------------------------------------
     // Load the current pixel's reservoir (from temporal pass)
-    // Note: We read from A (temporal output), write to A (in-place update)
-    // The C code will handle the ping-pong swap after this pass
+    // Read from A (temporal output), write to A (in-place update)
     // -------------------------------------------------------------------------
-    
-    RestirGIReservoir centerReservoir = restirGI_loadReservoirB(ipos);  // Actually reads temporal output
+
+    RestirGIReservoir centerReservoir = restirGI_loadReservoirA(ipos);
     RestirGIReservoir outputReservoir = centerReservoir;
-    
+
     // Track MIS normalization
     float selectedTargetPdf = 0.0;
     if (restirGI_isValid(centerReservoir))
@@ -100,8 +104,13 @@ void main()
             centerReservoir.radiance,
             currentPos,
             currentNormal);
+
+        // CRITICAL: The temporal pass finalized the weight (divided by targetPdf * M).
+        // We need to "un-finalize" to get back the RIS weight sum for proper combining.
+        // risWeightSum = finalWeight * targetPdf * M
+        outputReservoir.weightSum = centerReservoir.weightSum * selectedTargetPdf * float(centerReservoir.M);
     }
-    
+
     uint totalM = centerReservoir.M;
     
     // -------------------------------------------------------------------------
@@ -145,7 +154,7 @@ void main()
             continue;
         
         // Load neighbor's reservoir (from temporal pass output)
-        RestirGIReservoir neighborReservoir = restirGI_loadReservoirB(neighborPos);
+        RestirGIReservoir neighborReservoir = restirGI_loadReservoirA(neighborPos);
         
         if (!restirGI_isValid(neighborReservoir))
             continue;
@@ -168,8 +177,24 @@ void main()
         
         // Prepare neighbor reservoir for combination
         RestirGIReservoir tempNeighbor = neighborReservoir;
+
+        // The neighbor's weight is finalized - un-finalize it first
+        // Compute the neighbor's target PDF at its own surface for un-finalization
+        float neighborTargetPdf = restirGI_getTargetPdf(
+            neighborReservoir.position,
+            neighborReservoir.radiance,
+            neighborSurfacePos,
+            neighborNormal);
+
+        if (neighborTargetPdf > 0.0)
+        {
+            // Un-finalize: risWeightSum = finalWeight * neighborTargetPdf * M
+            tempNeighbor.weightSum = neighborReservoir.weightSum * neighborTargetPdf * float(neighborReservoir.M);
+        }
+
+        // Apply Jacobian for domain transformation
         tempNeighbor.weightSum *= jacobian;
-        
+
         // Combine reservoirs
         float rng = get_rng_local(uint(i));
         bool selected = restirGI_combineReservoirs(outputReservoir, tempNeighbor, rng, targetPdf);

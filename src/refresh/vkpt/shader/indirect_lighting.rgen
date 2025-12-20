@@ -37,8 +37,8 @@ layout(constant_id = 0) const uint spec_bounce_index = 0;
 
 void
 indirect_lighting(
-	ivec2 ipos, 
-	bool half_res, 
+	ivec2 ipos,
+	bool half_res,
 	out vec3 bounce_direction,
 	out vec3 bounce_contrib,
 	out bool is_specular_ray)
@@ -127,6 +127,7 @@ indirect_lighting(
 	bool first_bounce_is_specular = throughput.a != 0;
 
 	vec3 bounce_throughput = throughput.rgb;
+	float restir_gi_radiance_luminance = 0.0;  // For ReSTIR GI: secondary surface radiance luminance
 
 	is_specular_ray = false;
 	{ 
@@ -248,18 +249,19 @@ indirect_lighting(
 
 	bool bounce_is_sky_light = false;
 
-	if(!found_intersection(ray_payload_geometry)) 
+	if(!found_intersection(ray_payload_geometry))
 	{
-		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
+		// Clear for miss - indicate no valid bounce surface
+		bool need_next_bounce = spec_bounce_index < global_ubo.pt_num_bounce_rays - 1;
+		bool need_restir_gi = (spec_bounce_index == 0) && (global_ubo.pt_restir_gi_enable != 0);
+		if(need_next_bounce)
 		{
 			imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(0));
 		}
-		// Clear GI reservoir for miss (no bounce surface)
-		if (spec_bounce_index == 0 && global_ubo.pt_restir_gi_enable != 0)
+		else if(need_restir_gi)
 		{
-			imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(0));
-			imageStore(IMG_PT_RESTIR_GI_NORM_RAD_A, ipos, uvec4(0));
-			imageStore(IMG_PT_RESTIR_GI_WEIGHT_A, ipos, uvec4(0));
+			// ReSTIR GI only: store zero distance to indicate invalid sample
+			imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(0));
 		}
 		return;
 	}
@@ -312,16 +314,19 @@ indirect_lighting(
 			}
 		}
 
-		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
+		// Clear position for sky hit (no solid bounce surface)
+		// For multi-bounce: clear PT_SHADING_POSITION
+		// For ReSTIR GI only: clear VIEW_DIRECTION2.w (hit distance = 0 means invalid)
+		bool need_next_bounce = spec_bounce_index < global_ubo.pt_num_bounce_rays - 1;
+		bool need_restir_gi = (spec_bounce_index == 0) && (global_ubo.pt_restir_gi_enable != 0);
+		if(need_next_bounce)
 		{
 			imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(0));
 		}
-		// Clear GI reservoir for sky hit (no solid bounce surface)
-		if (spec_bounce_index == 0 && global_ubo.pt_restir_gi_enable != 0)
+		else if(need_restir_gi)
 		{
-			imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(0));
-			imageStore(IMG_PT_RESTIR_GI_NORM_RAD_A, ipos, uvec4(0));
-			imageStore(IMG_PT_RESTIR_GI_WEIGHT_A, ipos, uvec4(0));
+			// ReSTIR GI only: store zero distance to indicate invalid sample
+			imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(0));
 		}
 	}
 	else
@@ -361,8 +366,11 @@ indirect_lighting(
 
 		emissive += get_emissive_shell(triangle.material_id, triangle.shell) * bounce_base_color;
 
-		if(luminance(emissive) > 0) 
-		{        
+		// Save raw emissive for ReSTIR GI before throughput modification
+		vec3 raw_emissive = emissive;
+
+		if(luminance(emissive) > 0)
+		{
 			emissive *= bounce_throughput;
 
 			// spotlight term that matches the sample_light_lists() function in light_lists.h
@@ -430,32 +438,47 @@ indirect_lighting(
 				bounce_specular);
 
 			bounce_contrib += bounce_throughput * bounce_diffuse;
-			
-			// =========================================================================
-			// ReSTIR GI: Store initial GI sample for resampling
-			// We store the secondary surface hit data so the temporal/spatial passes
-			// can resample and improve the indirect lighting estimate.
-			// =========================================================================
+
+			// ReSTIR GI data is passed via existing G-buffer images:
+			// - IMG_PT_SHADING_POSITION: secondary surface position
+			// - IMG_PT_GEO_NORMAL2: secondary surface normal
+			// - IMG_PT_BOUNCE_THROUGHPUT.w: stores luminance of secondary radiance for ReSTIR GI
 			if (global_ubo.pt_restir_gi_enable != 0 && !is_specular_ray)
 			{
-				// Store secondary surface position
-				imageStore(IMG_PT_RESTIR_GI_POS_A, ipos, vec4(bounce_position, 0.0));
-				
-				// Pack and store normal + radiance at bounce point
-				// Radiance includes direct lighting at the bounce surface
-				vec3 bounceRadiance = bounce_diffuse;
-				uint packedNormal = encodeNormalOct(bounce_geo_normal);
-				uint packedRadiance = encodeRadianceLogLuv(bounceRadiance);
-				imageStore(IMG_PT_RESTIR_GI_NORM_RAD_A, ipos, uvec4(packedNormal, packedRadiance, 0, 0));
-				
-				// Initial weight (uniform sampling, M=1, age=0)
-				imageStore(IMG_PT_RESTIR_GI_WEIGHT_A, ipos, uvec4(floatBitsToUint(1.0), 0, 0, 0));
+				// Get sun contribution for secondary surface radiance
+				vec3 bounce_sun_diffuse_gi = vec3(0);
+				if (sun_attenuation > 0)
+				{
+					vec3 bounce_sun_specular_gi;
+					get_sunlight(
+						bounce_cluster_idx,
+						bounce_material_id,
+						bounce_position,
+						bounce_normal,
+						bounce_geo_normal,
+						bounce_direction,
+						vec3(0), 0.0, 1.0, MEDIUM_NONE, false,
+						bounce_sun_diffuse_gi,
+						bounce_sun_specular_gi,
+						shadow_cull_mask);
+				}
+
+				// Compute raw radiance at secondary surface (no path throughput)
+				vec3 secondaryRadiance = raw_emissive;
+				secondaryRadiance += bounce_diffuse * bounce_base_color;
+				secondaryRadiance += bounce_sun_diffuse_gi * bounce_base_color * global_ubo.sun_bounce_scale * sun_attenuation;
+
+				// Store radiance luminance - will be packed into bounce_throughput storage
+				// The temporal shader will reconstruct approximate radiance from this
+				restir_gi_radiance_luminance = luminance(secondaryRadiance);
 			}
 		}
-		
+
+		// Sun contribution to path tracer output
+		vec3 bounce_sun_diffuse = vec3(0);
 		if(sun_attenuation > 0)
 		{
-			vec3 bounce_sun_diffuse, bounce_sun_specular;
+			vec3 bounce_sun_specular;
 			get_sunlight(
 				bounce_cluster_idx,
 				bounce_material_id,
@@ -474,13 +497,34 @@ indirect_lighting(
 			bounce_contrib += bounce_throughput * bounce_sun_diffuse * global_ubo.sun_bounce_scale * sun_attenuation;
 		}
 
-		if(spec_bounce_index < global_ubo.pt_num_bounce_rays - 1)
+		// Store surface parameters for multi-bounce OR for ReSTIR GI
+		// ReSTIR GI needs the secondary surface data even in single-bounce mode
+		bool need_next_bounce = spec_bounce_index < global_ubo.pt_num_bounce_rays - 1;
+		bool need_restir_gi = (spec_bounce_index == 0) && (global_ubo.pt_restir_gi_enable != 0) && !is_specular_ray;
+
+		if(need_next_bounce || need_restir_gi)
 		{
-			// store surface parameters for the next bounce
+			// Store secondary surface normal
 			imageStore(IMG_PT_GEO_NORMAL2, ipos, uvec4(encode_normal(bounce_geo_normal)));
-			imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(bounce_position.xyz, uintBitsToFloat(triangle.material_id)));
-			imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(bounce_direction, 0));
-			imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(bounce_throughput, is_specular_ray ? 1 : 0));
+
+			// For multi-bounce: store secondary position (overwrites primary, needed for next bounce)
+			// For ReSTIR GI only: DON'T overwrite primary position - store distance instead
+			if(need_next_bounce)
+			{
+				imageStore(IMG_PT_SHADING_POSITION, ipos, vec4(bounce_position.xyz, uintBitsToFloat(triangle.material_id)));
+				imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(bounce_direction, 0));
+			}
+			else
+			{
+				// ReSTIR GI only: store direction + hit distance in VIEW_DIRECTION2
+				// Temporal shader reconstructs: secondary_pos = primary_pos + direction * distance
+				imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(bounce_direction, ray_payload_geometry.hit_distance));
+			}
+
+			// For ReSTIR GI (first diffuse bounce), store radiance luminance in .w component
+			// For specular/multi-bounce, store specular flag (0 or 1)
+			float bounce_w = need_restir_gi ? restir_gi_radiance_luminance : (is_specular_ray ? 1.0 : 0.0);
+			imageStore(IMG_PT_BOUNCE_THROUGHPUT, ipos, vec4(bounce_throughput, bounce_w));
 		}
 	}
 
@@ -495,7 +539,7 @@ indirect_lighting(
 }
 
 void
-main() 
+main()
 {
 	ivec2 ipos = ivec2(rt_LaunchID.xy);
 	if(rt_LaunchID.z != 0)
@@ -508,7 +552,7 @@ main()
 	{
 		// Tracing threads are launched in a dense grid whose vertical
 		// size is only half of the frame, so rename the threads.
-		// This is more efficient than launching an entire frame of 
+		// This is more efficient than launching an entire frame of
 		// threads and then doing nothing in every other row.
 		ipos.y = ipos.y * 2 + (global_ubo.current_frame_idx & 1);
 	}

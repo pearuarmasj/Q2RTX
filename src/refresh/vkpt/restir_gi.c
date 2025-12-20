@@ -126,8 +126,9 @@ vkpt_restir_gi_destroy_pipelines(void)
 VkResult
 vkpt_restir_gi_record_cmd_buffer(VkCommandBuffer cmd_buf)
 {
-    // Check if ReSTIR GI is enabled
-    if (cvar_pt_restir_gi_enable->value == 0)
+    // Check if ReSTIR GI is enabled (debug view 99 always runs for testing)
+    int debug_view = (int)(cvar_pt_restir_gi_debug_view->value + 0.5f);
+    if (cvar_pt_restir_gi_enable->value == 0 && debug_view != 99)
         return VK_SUCCESS;
 
     VkDescriptorSet desc_sets[] = {

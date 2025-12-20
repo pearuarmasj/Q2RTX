@@ -556,7 +556,7 @@ IF (WIN32)
     IF(TARGET client)
         TARGET_INCLUDE_DIRECTORIES(client PRIVATE ../VC/inc)
         TARGET_LINK_LIBRARIES(client winmm ws2_32)
-        SET_TARGET_PROPERTIES(client PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        SET_TARGET_PROPERTIES(client PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${GAME_OUTPUT_DIR}")
         # macro redefinition, deprecation
         TARGET_COMPILE_OPTIONS(client PRIVATE /wd4005 /wd4996)
     ENDIF()
@@ -567,7 +567,7 @@ IF (WIN32)
 
     TARGET_LINK_LIBRARIES(server winmm ws2_32)
 
-    SET_TARGET_PROPERTIES(server PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    SET_TARGET_PROPERTIES(server PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${GAME_OUTPUT_DIR}")
 
     # macro redefinition, deprecation
     TARGET_COMPILE_OPTIONS(server PRIVATE /wd4005 /wd4996)
@@ -607,22 +607,22 @@ IF(TARGET client)
     SET_TARGET_PROPERTIES(client
         PROPERTIES
         OUTPUT_NAME "q2rtx"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${GAME_OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${GAME_OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${GAME_OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${GAME_OUTPUT_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${GAME_OUTPUT_DIR}"
         DEBUG_POSTFIX ""
     )
 ENDIF()
 
 SET_TARGET_PROPERTIES(server
     PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${GAME_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${GAME_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${GAME_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${GAME_OUTPUT_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${GAME_OUTPUT_DIR}"
     DEBUG_POSTFIX ""
 )
 
@@ -636,16 +636,16 @@ ENDIF()
 
 SET_TARGET_PROPERTIES(game
     PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/baseq2"
-    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/baseq2"
-    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/baseq2"
-    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/baseq2"
-    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/baseq2"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/baseq2"
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/baseq2"
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/baseq2"
-    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_SOURCE_DIR}/baseq2"
-    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${CMAKE_SOURCE_DIR}/baseq2"
+    LIBRARY_OUTPUT_DIRECTORY "${GAME_OUTPUT_DIR}/baseq2"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG "${GAME_OUTPUT_DIR}/baseq2"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${GAME_OUTPUT_DIR}/baseq2"
+    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${GAME_OUTPUT_DIR}/baseq2"
+    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${GAME_OUTPUT_DIR}/baseq2"
+    RUNTIME_OUTPUT_DIRECTORY "${GAME_OUTPUT_DIR}/baseq2"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG "${GAME_OUTPUT_DIR}/baseq2"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${GAME_OUTPUT_DIR}/baseq2"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${GAME_OUTPUT_DIR}/baseq2"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${GAME_OUTPUT_DIR}/baseq2"
     PREFIX ""
     DEBUG_POSTFIX ""
 )
@@ -683,6 +683,87 @@ ELSE()
         RUNTIME_OUTPUT_NAME "gamex86"
     )
 ENDIF()
+
+# ---------- Copy game data and runtime files to game output directory ----------
+# Create a custom target to copy all necessary game data files
+
+# List of baseq2 data files to copy
+set(BASEQ2_DATA_FILES
+    "${CMAKE_SOURCE_DIR}/baseq2/pak0.pak"
+    "${CMAKE_SOURCE_DIR}/baseq2/pak1.pak"
+    "${CMAKE_SOURCE_DIR}/baseq2/pak2.pak"
+    "${CMAKE_SOURCE_DIR}/baseq2/blue_noise.pkz"
+    "${CMAKE_SOURCE_DIR}/baseq2/q2rtx_media.pkz"
+    "${CMAKE_SOURCE_DIR}/baseq2/shaders.pkz"
+    "${CMAKE_SOURCE_DIR}/baseq2/q2rtx.cfg"
+    "${CMAKE_SOURCE_DIR}/baseq2/pt_toggles.cfg"
+    "${CMAKE_SOURCE_DIR}/baseq2/prefetch.txt"
+    "${CMAKE_SOURCE_DIR}/baseq2/maps.lst"
+    "${CMAKE_SOURCE_DIR}/baseq2/q2rtx.menu"
+)
+
+# List of baseq2 directories to copy
+set(BASEQ2_DATA_DIRS
+    "${CMAKE_SOURCE_DIR}/baseq2/maps"
+    "${CMAKE_SOURCE_DIR}/baseq2/materials"
+    "${CMAKE_SOURCE_DIR}/baseq2/pics"
+    "${CMAKE_SOURCE_DIR}/baseq2/players"
+    "${CMAKE_SOURCE_DIR}/baseq2/video"
+)
+
+# Create custom target for copying game data
+add_custom_target(copy_game_data ALL
+    COMMENT "Copying game data to ${GAME_OUTPUT_DIR}"
+)
+
+# Copy baseq2 data files
+foreach(data_file ${BASEQ2_DATA_FILES})
+    if(EXISTS "${data_file}")
+        get_filename_component(filename ${data_file} NAME)
+        add_custom_command(TARGET copy_game_data POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${GAME_OUTPUT_DIR}/baseq2"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${data_file}" "${GAME_OUTPUT_DIR}/baseq2/${filename}"
+            COMMENT "Copying ${filename}"
+        )
+    endif()
+endforeach()
+
+# Copy baseq2 directories
+foreach(data_dir ${BASEQ2_DATA_DIRS})
+    if(EXISTS "${data_dir}")
+        get_filename_component(dirname ${data_dir} NAME)
+        add_custom_command(TARGET copy_game_data POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory "${data_dir}" "${GAME_OUTPUT_DIR}/baseq2/${dirname}"
+            COMMENT "Copying ${dirname}/"
+        )
+    endif()
+endforeach()
+
+# Copy runtime DLLs (Windows only)
+IF(WIN32)
+    set(RUNTIME_DLLS
+        "${CMAKE_SOURCE_DIR}/nvngx_dlss.dll"
+        "${CMAKE_SOURCE_DIR}/nvngx_dlssd.dll"
+        "${CMAKE_SOURCE_DIR}/vulkan-1.lib"
+    )
+
+    foreach(dll_file ${RUNTIME_DLLS})
+        if(EXISTS "${dll_file}")
+            get_filename_component(filename ${dll_file} NAME)
+            add_custom_command(TARGET copy_game_data POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll_file}" "${GAME_OUTPUT_DIR}/${filename}"
+                COMMENT "Copying ${filename}"
+            )
+        endif()
+    endforeach()
+ENDIF()
+
+# Make sure game data is copied before building targets that need it
+IF(TARGET client)
+    add_dependencies(client copy_game_data)
+ENDIF()
+add_dependencies(server copy_game_data)
+add_dependencies(game copy_game_data)
 
 IF(CONFIG_LINUX_PACKAGING_SUPPORT)
     # Put the real game binary in /usr/share so we can have a wrapper in /usr/bin

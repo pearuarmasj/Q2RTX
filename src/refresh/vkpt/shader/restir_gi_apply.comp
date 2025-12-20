@@ -46,17 +46,73 @@ void main()
     if (ipos.x >= global_ubo.width || ipos.y >= global_ubo.height)
         return;
     
+    int debugView = int(global_ubo.pt_restir_gi_debug_view);
+
+    // Debug view 20: Show bounce distance from VIEW_DIRECTION2.w
+    if (debugView == 20)
+    {
+        vec4 bounceData = texelFetch(TEX_PT_VIEW_DIRECTION2, ipos, 0);
+        float bounceDistance = bounceData.w;
+        vec3 debugColor;
+        if (bounceDistance < 0.001)
+            debugColor = vec3(1.0, 0.0, 0.0);  // Red = no bounce data
+        else
+            debugColor = vec3(0.0, 1.0, 0.0) * clamp(bounceDistance * 0.01, 0.0, 1.0);  // Green = has bounce
+        imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debugColor * STORAGE_SCALE_HF)));
+        return;
+    }
+
+    // Debug view 21: Show radiance luminance from BOUNCE_THROUGHPUT.w
+    if (debugView == 21)
+    {
+        float radLuminance = texelFetch(TEX_PT_BOUNCE_THROUGHPUT, ipos, 0).w;
+        vec3 debugColor;
+        if (radLuminance < 0.001)
+            debugColor = vec3(0.0, 0.0, 1.0);  // Blue = no radiance
+        else
+            debugColor = vec3(radLuminance * 0.5);  // Grayscale = radiance luminance
+        imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debugColor * STORAGE_SCALE_HF)));
+        return;
+    }
+
+    // Debug view 22: Show secondary surface normal from GEO_NORMAL2
+    if (debugView == 22)
+    {
+        vec3 normal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL2, ipos, 0).x);
+        vec3 debugColor = normal * 0.5 + 0.5;  // Map -1..1 to 0..1
+        imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debugColor * STORAGE_SCALE_HF)));
+        return;
+    }
+    
     // Check if ReSTIR GI is enabled
     if (global_ubo.pt_restir_gi_enable == 0)
         return;
-    
-    int debugView = int(global_ubo.pt_restir_gi_debug_view);
-    
-    // Debug view 10: just show that the shader is running (red tint)
+
+    // Debug view 10: shader running + GI enabled (red tint)
     if (debugView == 10)
     {
         vec3 debugColor = vec3(0.2, 0.0, 0.0) * STORAGE_SCALE_HF;
         imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debugColor)));
+        return;
+    }
+
+    // Debug view 30: Show weight value from reservoir
+    if (debugView == 30)
+    {
+        uvec4 weightData = imageLoad(IMG_PT_RESTIR_GI_WEIGHT_A, ipos);
+        float w = uintBitsToFloat(weightData.x);
+        vec3 debugColor;
+        if (isnan(w) || isinf(w))
+            debugColor = vec3(1.0, 0.0, 1.0);  // Magenta = NaN/Inf
+        else if (w <= 0.0)
+            debugColor = vec3(1.0, 0.0, 0.0);  // Red = zero/negative weight
+        else if (w < 0.1)
+            debugColor = vec3(0.0, 0.0, 1.0);  // Blue = very small weight
+        else if (w > 100.0)
+            debugColor = vec3(1.0, 1.0, 0.0);  // Yellow = huge weight
+        else
+            debugColor = vec3(0.0, 1.0, 0.0) * clamp(w, 0.0, 1.0);  // Green = reasonable
+        imageStore(IMG_PT_COLOR_HF, ipos, uvec4(packRGBE(debugColor * STORAGE_SCALE_HF)));
         return;
     }
     
@@ -84,11 +140,15 @@ void main()
     // Skip invalid reservoirs
     if (!restirGI_isValid(reservoir) || reservoir.weightSum <= 0.0)
         return;
-    
+
+    // Clamp weight to prevent extreme values from numerical issues
+    // A properly normalized reservoir should have weight close to 1.0
+    float weight = clamp(reservoir.weightSum, 0.0, 10.0);
+
     // -------------------------------------------------------------------------
     // Compute GI contribution
     // -------------------------------------------------------------------------
-    
+
     vec3 toSample = reservoir.position - surfacePos;
     float dist2 = dot(toSample, toSample);
     
@@ -107,8 +167,12 @@ void main()
     // GI contribution = radiance * brdf * geometry term * reservoir weight
     // The reservoir weight already contains 1/pdf, so this gives us the properly
     // weighted Monte Carlo estimate
-    vec3 giContrib = reservoir.radiance * brdf * NdotL * reservoir.weightSum;
-    
+    vec3 giContrib = reservoir.radiance * brdf * NdotL * weight;
+
+    // NaN/Inf protection
+    if (any(isnan(giContrib)) || any(isinf(giContrib)))
+        return;
+
     // Clamp to prevent fireflies
     float maxLum = 10.0;
     float lum = luminance(giContrib);
@@ -116,6 +180,9 @@ void main()
     {
         giContrib *= maxLum / lum;
     }
+
+    // Additional safety clamp
+    giContrib = max(giContrib, vec3(0.0));
     
     // -------------------------------------------------------------------------
     // Debug view options

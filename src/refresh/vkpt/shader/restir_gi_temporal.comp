@@ -57,10 +57,15 @@ float get_rng_local(uint dimension)
 void main()
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID.xy);
-    
+
     if (ipos.x >= global_ubo.width || ipos.y >= global_ubo.height)
         return;
-    
+
+    // Debug views 20+ need raw data from indirect_lighting.rgen - pass through
+    int debugView = int(global_ubo.pt_restir_gi_debug_view);
+    if (debugView >= 20)
+        return;
+
     // Check if ReSTIR GI is enabled
     if (global_ubo.pt_restir_gi_enable == 0)
     {
@@ -95,31 +100,48 @@ void main()
     
     // -------------------------------------------------------------------------
     // Load the current frame's GI sample from path tracer bounce output
-    // The bounce ray creates an initial GI sample
+    // The bounce ray creates an initial GI sample stored in working G-buffer:
+    // - VIEW_DIRECTION2: bounce direction (xyz) and hit distance (w)
+    // - GEO_NORMAL2: secondary surface normal
+    // - BOUNCE_THROUGHPUT.w: radiance luminance
     // -------------------------------------------------------------------------
-    
-    // Read secondary surface data from bounce pass output
-    vec4 giSamplePosData = texelFetch(TEX_PT_RESTIR_GI_POS_A, ipos, 0);
-    vec3 giSamplePos = giSamplePosData.xyz;
-    
-    // Check if we have a valid GI sample
-    bool hasValidSample = (length(giSamplePos - currentPos) > 0.001);
-    
+
+    // Read bounce direction and distance from VIEW_DIRECTION2
+    vec4 bounceData = texelFetch(TEX_PT_VIEW_DIRECTION2, ipos, 0);
+    vec3 bounceDirection = bounceData.xyz;
+    float bounceDistance = bounceData.w;
+
+    // Check if we have a valid GI sample (distance > 0 means valid hit)
+    bool hasValidSample = (bounceDistance > 0.001);
+
     // Create initial reservoir from current sample
     RestirGIReservoir currentReservoir = restirGI_emptyReservoir();
-    
+
     if (hasValidSample)
     {
-        // Load packed normal and radiance from the GI reservoir buffer
-        uvec4 normRadData = texelFetch(TEX_PT_RESTIR_GI_NORM_RAD_A, ipos, 0);
-        vec3 giSampleNormal = decodeNormalOct(normRadData.x);
-        vec3 giSampleRadiance = decodeRadianceLogLuv(normRadData.y);
-        
-        if (luminance(giSampleRadiance) > 0.0)
+        // Reconstruct secondary surface position
+        vec3 giSamplePos = currentPos + bounceDirection * bounceDistance;
+
+        // Load secondary surface normal from GEO_NORMAL2
+        vec3 giSampleNormal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL2, ipos, 0).x);
+
+        // Load radiance luminance from BOUNCE_THROUGHPUT.w
+        float radLuminance = texelFetch(TEX_PT_BOUNCE_THROUGHPUT, ipos, 0).w;
+
+        // Reconstruct approximate radiance (grayscale based on luminance)
+        // The exact color is lost, but luminance is what matters for importance sampling
+        vec3 giSampleRadiance = vec3(radLuminance);
+
+        if (radLuminance > 0.0)
         {
-            // Initial sample with unit weight (uniform sampling)
-            float initialPdf = 1.0;  // Uniform hemisphere sampling pdf cancels out
-            currentReservoir = restirGI_makeReservoir(giSamplePos, giSampleNormal, giSampleRadiance, initialPdf);
+            // Initial sample with unit source PDF (uniform hemisphere sampling)
+            float sourcePdf = 1.0;
+            currentReservoir = restirGI_makeReservoir(giSamplePos, giSampleNormal, giSampleRadiance, sourcePdf);
+
+            // CRITICAL: Convert weightSum to RIS weight = targetPdf * (1/sourcePdf)
+            // This is needed because combineReservoirs expects weightSum to already include targetPdf
+            float initialTargetPdf = restirGI_getTargetPdf(giSamplePos, giSampleRadiance, currentPos, currentNormal);
+            currentReservoir.weightSum *= initialTargetPdf;
         }
     }
     
@@ -181,11 +203,13 @@ void main()
                             // Clamp M to prevent over-accumulation
                             uint maxHistory = uint(global_ubo.pt_restir_gi_max_history);
                             uint clampedM = min(prevReservoir.M, maxHistory);
-                            
+
                             RestirGIReservoir tempPrev = prevReservoir;
                             tempPrev.M = clampedM;
-                            tempPrev.weightSum *= (jacobian * float(clampedM)) / float(prevReservoir.M);
-                            
+                            // Only apply Jacobian - M clamping is handled by combineReservoirs
+                            // which multiplies by tempPrev.M internally
+                            tempPrev.weightSum *= jacobian;
+
                             // Combine reservoirs
                             float rng = get_rng_local(0);
                             restirGI_combineReservoirs(outputReservoir, tempPrev, rng, targetPdf);

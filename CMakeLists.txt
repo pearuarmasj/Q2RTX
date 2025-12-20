@@ -66,6 +66,9 @@ IF(CONFIG_BUILD_IPO)
 ENDIF()
 
 # ---------- Setup output Directories -------------------------
+# Game output directory - all compiled outputs go here
+set(GAME_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/game" CACHE PATH "Directory for game binaries and data")
+
 set (CMAKE_LIBRARY_OUTPUT_DIRECTORY
    ${PROJECT_BINARY_DIR}/Bin
    CACHE PATH

@@ -3,6 +3,7 @@
 .q2proded/
 .baseq2/
 .vscode/
+game/
 q2rtx
 q2rtxded
 game*.so
@@ -50,3 +51,4 @@ baseq2/**/*.txt
 *.github
 Additional sources for help
 .serena
+.claude
