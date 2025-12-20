@@ -58,6 +58,8 @@ Visual uplift is already quite substantial even with just that. Should also natu
 
 **ReSTIR Implementation:** In progress. DI is mostly ready and even without spatiotemporal reuse, the results are already quite incredible.
 
+**DLSS / RR Implementation:** Pretty much done.
+
 ---
 
 ## Original README
