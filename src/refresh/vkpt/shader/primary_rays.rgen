@@ -209,6 +209,12 @@ main()
 		imageStore(IMG_PT_VISBUF_BARY_A, ipos, vec4(0));
 		imageStore(IMG_PT_BASE_COLOR_A, ipos, vec4(0));
 		imageStore(IMG_PT_TRANSPARENT, ipos, transparent);
+		// DLSS-RR: Initialize ray length buffers for sky/miss pixels
+		if(global_ubo.pt_dlssdn != 0)
+		{
+			imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(0));
+			imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(0));
+		}
 		return;
 	}
 
@@ -442,9 +448,14 @@ main()
 	imageStore(IMG_PT_METALLIC_A, ipos, vec4(primary_metallic, primary_roughness, 0, 0));
 	imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(1, 1, 1, distance_curr));
 	
-	// DLSS-RR: Output emissive for Ray Reconstruction
+	// DLSS-RR: Output emissive and initialize ray length buffers for Ray Reconstruction
 	if(global_ubo.pt_dlssdn != 0)
+	{
 		imageStore(IMG_PT_EMISSIVE_RR, ipos, vec4(primary_emissive, 0));
+		// Initialize ray length buffers to 0 (indirect_lighting.rgen will overwrite for valid bounces)
+		imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(0));
+		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(0));
+	}
 
 	// Debug visualization of the PVS (Potentially Visible Set)
 	if(triangle.cluster >= 0 && global_ubo.cluster_debug_index >= 0)

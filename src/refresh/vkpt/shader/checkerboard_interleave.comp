@@ -88,11 +88,22 @@ right before this shader is invoked, see function `vkpt_interleave`.
 
 #include "utils.glsl"
 
-// Normalize ray hit distance to 0-1 range for DLSS Ray Reconstruction
-// DLSS expects hit distances normalized to a consistent range
+// NRD-style hit distance normalization parameters
+// Formula: scale = (A + |viewZ| * B) * lerp(1.0, C, exp2(D * roughness^2))
+// Default NRD HitDistanceParameters: A=3.0, B=0.1, C=20.0, D=-25.0
+const vec4 hitDistParams = vec4(3.0, 0.1, 20.0, -25.0);
+
+// NRD-style normalized hit distance (matches REBLUR_FrontEnd_GetNormHitDist)
+// IMPORTANT: For diffuse, roughness should be 1.0. For specular, use actual roughness.
+float GetNormHitDist(float hitDist, float viewZ, float roughness) {
+    // Calculate distance normalization scale
+    float f = (hitDistParams.x + abs(viewZ) * hitDistParams.y) * 
+              mix(1.0, hitDistParams.z, clamp(exp2(hitDistParams.w * roughness * roughness), 0.0, 1.0));
+    return clamp(hitDist / f, 0.0, 1.0);
+}
+
+// Legacy simple linear normalization (deprecated - keeping for reference)
 float ConvertDistance(float rayLength) {
-    // Convert from world units to normalized 0-1 range
-    // Using typical Q2 scene scale: 1 unit = ~1 inch, max view distance ~10000 units
     return clamp((rayLength - 1.0) / (10000.0 - 1.0), 0.0, 1.0);
 }
 
@@ -217,9 +228,12 @@ void main()
             imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos));
             imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos));
             
-            // DLSS ray length images - normalize to 0-1 range using ConvertDistance
-            float diffuseRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos).x);
-            float specularRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos).x);
+            // DLSS ray length images with NRD-style normalization based on viewZ and roughness
+            // Diffuse uses roughness=1.0, specular uses actual roughness (per NRD docs)
+            float viewZ = imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos).x;
+            float roughness = imageLoad(IMG_PT_ROUGHNESS, ipos).x;
+            float diffuseRayLen = GetNormHitDist(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos).x, viewZ, 1.0);
+            float specularRayLen = GetNormHitDist(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos).x, viewZ, roughness);
             imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuseRayLen));
             imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specularRayLen));
         }
@@ -250,9 +264,12 @@ void main()
             imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, offset_ipos));
             imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, offset_ipos));
             
-            // DLSS ray length images - normalize to 0-1 range using ConvertDistance
-            float diffuseRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, offset_ipos).x);
-            float specularRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, offset_ipos).x);
+            // DLSS ray length images with NRD-style normalization based on viewZ and roughness
+            // Diffuse uses roughness=1.0, specular uses actual roughness (per NRD docs)
+            float viewZ = imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, offset_ipos).x;
+            float roughness = imageLoad(IMG_PT_ROUGHNESS, offset_ipos).x;
+            float diffuseRayLen = GetNormHitDist(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, offset_ipos).x, viewZ, 1.0);
+            float specularRayLen = GetNormHitDist(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, offset_ipos).x, viewZ, roughness);
             imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuseRayLen));
             imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specularRayLen));
         }
