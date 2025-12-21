@@ -256,8 +256,10 @@ direct_lighting(
 		o_specular += direct_specular;
 	}
 	
-	// Sun lighting is now part of ReSTIR DI when enabled; avoid double-counting.
-	if(global_ubo.pt_direct_sun_light != 0 && global_ubo.pt_restir_enable == 0)
+	// Sun is ALWAYS computed separately (not part of ReSTIR DI candidate pool).
+	// ReSTIR samples ONE light per pixel, but sun should contribute to ALL sunlit pixels.
+	// Including sun in ReSTIR causes flat, ambient-looking lighting.
+	if(global_ubo.pt_direct_sun_light != 0)
 	{
 		vec3 direct_sun_diffuse, direct_sun_specular;
 		get_sunlight(

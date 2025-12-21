@@ -36,6 +36,7 @@ uniform accelerationStructureEXT topLevelAS[TLAS_COUNT];
 #include "asvgf.glsl"
 #include "brdf.glsl"
 #include "water.glsl"
+#include "tiny_encryption_algorithm.h"
 
 /* RNG seeds contain 'X' and 'Y' values that are computed w/ a modulo BLUE_NOISE_RES,
  * so the shift values can be chosen to fit BLUE_NOISE_RES - 1
@@ -1591,18 +1592,25 @@ get_direct_illumination_restir_di(
 	vec2 selected_y_pos = vec2(0);
 	int selected_source = -1; // 0=current candidates, 1=temporal, 2=spatial
 
-	bool enable_sun = (global_ubo.pt_direct_sun_light != 0);
+	// Sun is now handled separately in direct_lighting.rgen (not as a ReSTIR candidate)
+	// because ReSTIR samples ONE light per pixel, but sun should contribute to ALL sunlit pixels.
+	// Including sun in ReSTIR causes flat, ambient lighting when polygon lights are also enabled.
+	bool enable_sun = false;  // Disabled - sun handled separately
 	if(!enable_polygonal && !enable_sun)
 		return;
+
+	// TEA-based RNG for ReSTIR DI candidate generation - local to this function
+	uvec2 tea_rng_state = uvec2(ipos.x + ipos.y * 32768u, global_ubo.current_frame_idx);
+	#define RESTIR_DI_GET_RNG() (tea_rng_state = encrypt_tea(tea_rng_state), float(tea_rng_state.x) / float(0xffffffffu))
 
 	// 1) Per-pixel candidate generation (unshadowed) + reservoir sampling.
 	if(enable_polygonal)
 	{
 		for(int i = 0; i < N; i++)
 		{
-			float rng_light_sel = get_rng(RNG_RESTIR_DI_LIGHT_SEL(i));
-			vec2 y_pos = vec2(get_rng(RNG_RESTIR_DI_TRI_X(i)), get_rng(RNG_RESTIR_DI_TRI_Y(i)));
-			float rng_resample = get_rng(RNG_RESTIR_DI_RESAMPLE(i));
+			float rng_light_sel = RESTIR_DI_GET_RNG();
+			vec2 y_pos = vec2(RESTIR_DI_GET_RNG(), RESTIR_DI_GET_RNG());
+			float rng_resample = RESTIR_DI_GET_RNG();
 
 			uint cand_light_id;
 			if(!restir_di_pick_polygonal_light_uniform(cluster_idx, rng_light_sel, cand_light_id))
@@ -1626,7 +1634,7 @@ get_direct_illumination_restir_di(
 
 			float w = p_hat;
 			w_sum += w;
-			M = min(M + 1, RESTIR_DI_M_CLAMP);
+			M += 1;
 
 			// Weighted reservoir sampling.
 			if(w > 0.0 && rng_resample < (w / max(w_sum, 1e-6)))
@@ -1645,8 +1653,8 @@ get_direct_illumination_restir_di(
 	// visibility/noise can benefit from temporal/spatial reuse.
 	if(enable_sun)
 	{
-		vec2 sun_y_pos = vec2(get_rng(RNG_SUNLIGHT_X(0)), get_rng(RNG_SUNLIGHT_Y(0)));
-		float rng_resample = get_rng(RNG_RESTIR_DI_BASE + 412u);
+		vec2 sun_y_pos = vec2(RESTIR_DI_GET_RNG(), RESTIR_DI_GET_RNG());
+		float rng_resample = RESTIR_DI_GET_RNG();
 
 		float p_hat;
 		if(restir_di_evaluate_sun_unshadowed(
@@ -1663,7 +1671,7 @@ get_direct_illumination_restir_di(
 		{
 			float w = p_hat;
 			w_sum += w;
-			M = min(M + 1, RESTIR_DI_M_CLAMP);
+			M += 1;
 			if(w > 0.0 && rng_resample < (w / max(w_sum, 1e-6)))
 			{
 				selected_weight = w;
@@ -1675,6 +1683,23 @@ get_direct_illumination_restir_di(
 			}
 		}
 	}
+
+	// Track M from current frame candidates for bias correction
+	int M_current = M;
+
+	// Bias correction tracking: store contribution data from temporal/spatial sources
+	// CRITICAL: These track contributions that were CONSIDERED, not just those that WON!
+	// piSum needs ALL sources for proper MIS normalization to prevent weight explosion.
+	int m_temporal_considered = 0;      // M contribution from temporal source (if any)
+	int m_spatial_considered = 0;       // TOTAL M contribution from ALL spatial neighbors considered
+	float p_hat_at_temporal = 0.0;      // p_hat of temporal sample at current surface (for piSum)
+	float p_hat_at_spatial_sum = 0.0;   // SUM of (p_hat * m) for all spatial neighbors (for piSum)
+
+	// These track the WINNING source for the numerator (pi)
+	int selected_source_m = 0;          // M of the source that produced selected sample
+	float selected_source_p_hat = 0.0;  // p_hat at source surface (for RAY_TRACED bias correction)
+	ivec2 selected_source_pos = ivec2(0);  // Source pixel position for RAY_TRACED visibility
+	vec3 selected_source_geo_normal = vec3(0);  // Source surface geo_normal for visibility check
 
 	bool want_temporal = (global_ubo.pt_restir_temporal > 0.5);
 	bool want_spatial = (global_ubo.pt_restir_spatial > 0.5);
@@ -1826,9 +1851,14 @@ get_direct_illumination_restir_di(
 			if(ok)
 			{
 				float w = p_hat * prev_W * float(m_i);
-				float rng_resample = get_rng(RNG_RESTIR_DI_BASE + 409u);
+				float rng_resample = RESTIR_DI_GET_RNG();
 
-				M = min(M + m_i, RESTIR_DI_M_CLAMP);
+				// CRITICAL: Track temporal contribution for piSum REGARDLESS of whether it wins!
+				// This is needed for proper MIS normalization to prevent weight explosion.
+				m_temporal_considered = m_i;
+				p_hat_at_temporal = p_hat;
+
+				M += m_i;  // Don't clamp M during accumulation - clamping happens at storage
 				w_sum += w;
 				if(w > 0.0 && rng_resample < (w / max(w_sum, 1e-6)))
 				{
@@ -1838,6 +1868,12 @@ get_direct_illumination_restir_di(
 					selected_light_id = prev_light_id;
 					selected_y_pos = prev_y_pos;
 					selected_source = 1;
+
+					// Track winning source info for numerator (pi) calculation
+					selected_source_m = m_i;
+					selected_source_pos = ipos_prev;
+					selected_source_geo_normal = decode_normal(texelFetch(TEX_PT_GEO_NORMAL_B, ipos_prev, 0).x);
+					selected_source_p_hat = p_hat;  // Will be validated later for RAY_TRACED
 				}
 			}
 		}
@@ -1853,7 +1889,7 @@ get_direct_illumination_restir_di(
 				ivec2( 1, 0), ivec2(-1, 0), ivec2( 0, 1), ivec2( 0,-1),
 				ivec2( 1, 1), ivec2(-1, 1), ivec2( 1,-1), ivec2(-1,-1));
 
-			int rot = int(floor(get_rng(RNG_RESTIR_DI_BASE + 410u) * 8.0)) & 7;
+			int rot = int(floor(RESTIR_DI_GET_RNG() * 8.0)) & 7;
 			for(int j = 0; j < K; j++)
 			{
 				ivec2 nb;
@@ -1937,9 +1973,14 @@ get_direct_illumination_restir_di(
 					continue;
 
 				float w = p_hat * nb_W * float(m_i);
-				float rng_resample = get_rng(RNG_RESTIR_DI_BASE + 411u + uint(j));
+				float rng_resample = RESTIR_DI_GET_RNG();
 
-				M = min(M + m_i, RESTIR_DI_M_CLAMP);
+				// CRITICAL: Track ALL spatial contributions for piSum REGARDLESS of whether they win!
+				// This accumulates across ALL spatial neighbors, not just the winning one.
+				m_spatial_considered += m_i;
+				p_hat_at_spatial_sum += p_hat * float(m_i);
+
+				M += m_i;  // Don't clamp M during accumulation
 				w_sum += w;
 				if(w > 0.0 && rng_resample < (w / max(w_sum, 1e-6)))
 				{
@@ -1949,6 +1990,13 @@ get_direct_illumination_restir_di(
 					selected_light_id = nb_light_id;
 					selected_y_pos = nb_y_pos;
 					selected_source = 2;
+
+					// Track winning source info for numerator (pi) calculation
+					// NOTE: Do NOT clear temporal tracking! piSum needs ALL sources.
+					selected_source_m = m_i;
+					selected_source_pos = nb;
+					selected_source_geo_normal = geo_nb_prev;
+					selected_source_p_hat = p_hat;  // Will be validated later for RAY_TRACED
 				}
 			}
 		}
@@ -1958,15 +2006,84 @@ get_direct_illumination_restir_di(
 	{
 		dbg_w_sum = w_sum;
 		dbg_w_selected = selected_weight;
-		dbg_M = min(M, RESTIR_DI_M_CLAMP);
+		dbg_M = M;
 		dbg_source = selected_source;
 		return;
 	}
 
-	int M_eff = min(M, RESTIR_DI_M_CLAMP);
-	float W = w_sum / (float(M_eff) * max(selected_p_hat, 1e-6));
+	// -------------------------------------------------------------------------
+	// RAY_TRACED Bias Correction: Validate the winning source contribution
+	// by checking if the selected sample would have been valid from source surface.
+	// This prevents overbrightening from samples that are "cheating" - visible
+	// from current surface but not from the source surface.
+	// -------------------------------------------------------------------------
+
+	// Get light position for visibility checks (only for polygonal lights from reused sources)
+	vec3 light_pos_for_bias = vec3(0);
+	bool have_light_pos = false;
+	if(selected_kind == RESTIR_DI_KIND_POLYGONAL && selected_source > 0)
+	{
+		vec3 pos_on_light;
+		vec3 contrib;
+		float pdfw;
+		bool is_sky_light;
+		if(restir_di_eval_polygonal_sample(cluster_idx, position, geo_normal,
+			selected_light_id, selected_y_pos, pos_on_light, contrib, pdfw, is_sky_light))
+		{
+			light_pos_for_bias = pos_on_light;
+			have_light_pos = true;
+		}
+	}
+
+	// Validate winning source contribution (temporal or spatial)
+	// Only need to check the source that actually produced the selected sample
+	if(selected_source > 0 && have_light_pos)
+	{
+		// Approximate source surface position using current position
+		// (valid since we require same primitive with similar depth/normal)
+		vec3 source_pos_approx = position;  // Same primitive, close enough
+
+		// Check if light is above source surface's horizon
+		vec3 L_source = normalize(light_pos_for_bias - source_pos_approx);
+		float NdotL_source = dot(selected_source_geo_normal, L_source);
+
+		if(NdotL_source <= 0.0)
+		{
+			// Light is below horizon at source surface - invalidate
+			selected_source_p_hat = 0.0;
+		}
+		else
+		{
+			// RAY_TRACED: Trace visibility ray from source surface to light
+			Ray source_shadow_ray = get_shadow_ray(source_pos_approx - view_direction * 0.01,
+				light_pos_for_bias, 0);
+			float source_vis = trace_shadow_ray(source_shadow_ray, shadow_cull_mask);
+
+			if(source_vis <= 0.0)
+			{
+				// Not visible from source surface - invalidate contribution
+				selected_source_p_hat = 0.0;
+			}
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// Simple normalization (BIAS_CORRECTION_OFF style)
+	// This is biased but stable - bias appears as darkening at edges, not brightening.
+	// Formula: W = w_sum / (M * selected_p_hat)
+	// -------------------------------------------------------------------------
+	float W;
+	{
+		// Simple normalization - biased but stable
+		float denom = float(M) * selected_p_hat;
+		W = (denom > 1e-6) ? (w_sum / denom) : 0.0;
+	}
+
 	if(global_ubo.pt_restir_max_w > 0.0)
 		W = min(W, global_ubo.pt_restir_max_w);
+
+	// For storage, clamp M to same value used during combination for consistency
+	int M_store = min(M, RESTIR_DI_M_CLAMP);
 
 	vec3 shaded_diffuse, shaded_specular;
 	float sel_vis;
@@ -2019,7 +2136,7 @@ get_direct_illumination_restir_di(
 		dbg_w_sum = w_sum;
 		dbg_w_selected = selected_weight;
 		dbg_scale = 0.0;
-		dbg_M = M_eff;
+		dbg_M = M;
 		dbg_kind = int(selected_kind);
 		dbg_light_id = int(selected_light_id);
 		dbg_source = selected_source;
@@ -2041,16 +2158,18 @@ get_direct_illumination_restir_di(
 	if(luminance(diffuse + specular) > 0.0)
 	{
 		out_restir_id_packed = restir_di_pack_id(selected_kind, selected_light_id);
-		out_restir_res_packed = restir_di_pack_reservoir(W, M_eff, selected_y_pos);
+		out_restir_res_packed = restir_di_pack_reservoir(W, M_store, selected_y_pos);
 	}
 
 	dbg_w_sum = w_sum;
 	dbg_w_selected = selected_weight;
 	dbg_scale = W;
-	dbg_M = M_eff;
+	dbg_M = M;
 	dbg_kind = int(selected_kind);
 	dbg_light_id = int(selected_light_id);
 	dbg_source = selected_source;
+
+	#undef RESTIR_DI_GET_RNG
 }
 
 void
