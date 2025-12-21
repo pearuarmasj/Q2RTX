@@ -58,7 +58,7 @@ float GetDLSSResolutionScale() {
         case 3:  // Balanced
             return .59f;
         case 4:  // Quality
-            return .66f;
+            return .88f;
         case 5:  // DLAA
             return 1.0f;
         default:
@@ -75,7 +75,7 @@ float GetDLSSMultResolutionScale() {
     case 3:  // Balanced
         return (4 * .59f);
     case 4:  // Quality
-        return (4 * .66f);
+        return (4 * .88f);
     case 5:  // DLAA
         return 1;
     default:
@@ -327,7 +327,7 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
         case 1:  presetName = "Ultra Performance (33%)"; break;
         case 2:  presetName = "Performance (50%)"; break;
         case 3:  presetName = "Balanced (59%)"; break;
-        case 4:  presetName = "Quality (66%)"; break;
+        case 4:  presetName = "Quality (88%)"; break;
         case 5:  presetName = "DLAA (100%)"; break;
     }
     
@@ -834,7 +834,7 @@ void viewsize_changed(cvar_t* self) {
         Cvar_SetInteger(scr_viewsize, 59, FROM_MENU);
         break;
     case 4:  // Quality
-        Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);   
+        Cvar_SetInteger(scr_viewsize, 88, FROM_MENU);   
         break;
     case 5:  // DLAA
         Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);
@@ -867,7 +867,7 @@ void DlssModeChanged(cvar_t* self) {
         Cvar_SetInteger(scr_viewsize, 59, FROM_MENU);
         return;
     case 4:  // Quality
-        Cvar_SetInteger(scr_viewsize, 66, FROM_MENU);
+        Cvar_SetInteger(scr_viewsize, 88, FROM_MENU);
         return;
     case 5:  // DLAA
         Cvar_SetInteger(scr_viewsize, 100, FROM_MENU);

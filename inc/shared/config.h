@@ -68,7 +68,9 @@
 #endif
 
 #define _USE_MATH_DEFINES
+#ifndef __cplusplus
 #define inline __inline
+#endif
 #define __func__ __FUNCTION__
 
 #ifdef _WIN64

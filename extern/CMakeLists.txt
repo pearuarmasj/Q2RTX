@@ -147,3 +147,32 @@ if (IS_64_BIT)
         target_compile_definitions(OpenAL PUBLIC AL_LIBTYPE_STATIC)
     endif()
 endif()
+
+#
+# NRD (NVIDIA Real-time Denoisers)
+#
+if(CONFIG_USE_NRD AND IS_64_BIT)
+    # Configure NRD options for Q2RTX integration
+    set(NRD_STATIC_LIBRARY ON CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_SPIRV_SHADERS ON CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_DXIL_SHADERS OFF CACHE BOOL "" FORCE)
+    set(NRD_EMBEDS_DXBC_SHADERS OFF CACHE BOOL "" FORCE)
+    set(NRD_NRI OFF CACHE BOOL "" FORCE)
+    set(NRD_NORMAL_ENCODING "2" CACHE STRING "" FORCE)  # R10G10B10A2_UNORM octahedron
+    set(NRD_ROUGHNESS_ENCODING "1" CACHE STRING "" FORCE)  # LINEAR
+    set(NRD_SUPPORTS_CHECKERBOARD ON CACHE BOOL "" FORCE)
+
+    add_subdirectory(RTX-Kit/NRD)
+
+    set_target_properties(NRD PROPERTIES FOLDER extern/NRD)
+    set_target_properties(NRDShaders PROPERTIES FOLDER extern/NRD)
+    if(TARGET MathLib)
+        set_target_properties(MathLib PROPERTIES FOLDER extern/NRD)
+    endif()
+    if(TARGET ShaderMake)
+        set_target_properties(ShaderMake PROPERTIES FOLDER extern/NRD)
+    endif()
+    if(TARGET ShaderMakeBlob)
+        set_target_properties(ShaderMakeBlob PROPERTIES FOLDER extern/NRD)
+    endif()
+endif()

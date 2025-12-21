@@ -292,6 +292,11 @@ SET(SRC_VKPT_DLSS
 	refresh/vkpt/DLSS.c
 )
 
+# NRD source files (conditionally added below)
+SET(SRC_VKPT_NRD
+	refresh/vkpt/nrd.cpp
+)
+
 SET(HEADERS_VKPT
 	refresh/vkpt/vkpt.h
 	refresh/vkpt/vk_util.h
@@ -307,6 +312,10 @@ SET(HEADERS_VKPT
 
 SET(HEADERS_VKPT_DLSS
 	refresh/vkpt/DLSS.h
+)
+
+SET(HEADERS_VKPT_NRD
+	refresh/vkpt/nrd.h
 )
 
 set(SRC_SHADERS
@@ -529,6 +538,15 @@ IF (TARGET client)
             TARGET_INCLUDE_DIRECTORIES(client PRIVATE ${CMAKE_SOURCE_DIR}/extern/RTX-Kit/dlss/include)
             TARGET_LINK_LIBRARIES(client ${CMAKE_SOURCE_DIR}/extern/RTX-Kit/dlss/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib)
             TARGET_COMPILE_DEFINITIONS(client PRIVATE CONFIG_USE_DLSS=1)
+        ENDIF()
+
+        # NRD support (NVIDIA Real-time Denoisers)
+        IF (CONFIG_USE_NRD)
+            TARGET_SOURCES(client PRIVATE ${SRC_VKPT_NRD} ${HEADERS_VKPT_NRD})
+            TARGET_INCLUDE_DIRECTORIES(client PRIVATE ${CMAKE_SOURCE_DIR}/extern/RTX-Kit/NRD/Include)
+            TARGET_INCLUDE_DIRECTORIES(client PRIVATE ${CMAKE_SOURCE_DIR}/extern/RTX-Kit/NRD/Integration)
+            TARGET_LINK_LIBRARIES(client NRD)
+            TARGET_COMPILE_DEFINITIONS(client PRIVATE CONFIG_USE_NRD=1)
         ENDIF()
     ENDIF()
 
