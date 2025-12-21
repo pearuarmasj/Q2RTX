@@ -185,7 +185,7 @@ begin video
 		range "texture LOD bias" pt_texture_lod_bias -2 2 0.5
         pairs "anti-aliasing" flt_taa "none" 0 "temporal AA" 1 "temporal upscaling" 2
         pairs "NVIDIA DLSS" pt_dlss "off" 0 "ultra perf" 1 "performance" 2 "balanced" 3 "quality" 4 "DLAA" 5
-        toggle --status "DLSS Ray Reconstruction (improved denoising)" "DLSS Ray Reconstruction" pt_dlss_dldn
+        toggle --status "DLSS Ray Reconstruction (improved denoising)" "DLSS Ray Reconstruction" pt_dlssdn
         toggle --status "let DLSS handle auto-exposure (may cause overexposure)" "DLSS Auto-Exposure" pt_dlss_autoexposure
         toggle "AMD FSR 1.0" flt_fsr_enable
         range --status "lower is sharper" "AMD FSR 1.0 sharpness" flt_fsr_sharpness 0 2 0.01

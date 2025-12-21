@@ -9,7 +9,7 @@ static char* GetEmptyString(size_t size) {
 
 DLSS dlssObj;
 cvar_t* cvar_pt_dlss = NULL;
-cvar_t* cvar_pt_dlss_dldn = NULL;
+extern cvar_t* cvar_pt_dlssdn;  // Defined via UBO_CVAR_LIST in main.c
 cvar_t* cvar_pt_dlss_autoexposure = NULL;
 qboolean recreateSwapChain = qfalse;
 qboolean dlssModeChanged = qfalse;
@@ -20,11 +20,10 @@ int oldCvarValue;
 void InitDLSSCvars() 
 {
     cvar_pt_dlss = Cvar_Get("pt_dlss", "0", CVAR_ARCHIVE);
-    cvar_pt_dlss_dldn = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE);
     cvar_pt_dlss_autoexposure = Cvar_Get("pt_dlss_autoexposure", "0", CVAR_ARCHIVE);
     oldCvarValue = cvar_pt_dlss->integer;
     cvar_pt_dlss->changed = viewsize_changed;
-    cvar_pt_dlss_dldn->changed = DlssFeatureChanged;  // Only recreate feature, no swapchain
+    cvar_pt_dlssdn->changed = DlssFeatureChanged;  // Only recreate feature, no swapchain
     cvar_pt_dlss_autoexposure->changed = DlssFeatureChanged;  // Only recreate feature, no swapchain
     viewsize_changed(cvar_pt_dlss);
 }
@@ -47,7 +46,7 @@ int DLSSMode() {
 }
 
 int DLSSModeDenoise() {
-    return cvar_pt_dlss_dldn->integer;
+    return cvar_pt_dlssdn->integer;
 }
 
 float GetDLSSResolutionScale() {
@@ -184,7 +183,7 @@ qboolean CheckSupport() {
     NVSDK_NGX_Result featureInitResult;
     NVSDK_NGX_Result res;
     float isDlssSupported = 0;
-    bool dldenoise = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
+    bool dldenoise = cvar_pt_dlssdn->integer == 1;
 
     if (!dldenoise) {
         res = NVSDK_NGX_Parameter_GetF(dlssObj.pParams, NVSDK_NGX_Parameter_SuperSampling_Available, &isDlssSupported);
@@ -332,7 +331,7 @@ qboolean ValidateDLSSFeature(VkCommandBuffer cmd, struct DLSSRenderResolution re
         case 5:  presetName = "DLAA (100%)"; break;
     }
     
-    bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
+    bool denoiseMode = cvar_pt_dlssdn->integer == 1;
     Com_Printf("DLSS: Creating feature - %s [%s]\n", presetName, denoiseMode ? "Ray Reconstruction" : "Super Resolution");
     Com_Printf("DLSS: Render: %dx%d -> Output: %dx%d\n", 
         resObject.inputWidth, resObject.inputHeight,
@@ -503,23 +502,24 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     NVSDK_NGX_Resource_VK unresolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_FLAT_COLOR], qvk.images_views[VKPT_IMG_FLAT_COLOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK motionVectorsResource = ToNGXResource(qvk.images[VKPT_IMG_PT_DLSS_MOTION], qvk.images_views[VKPT_IMG_PT_DLSS_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK resolvedColorResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_OUTPUT], qvk.images_views[VKPT_IMG_DLSS_OUTPUT], targetSize, VK_FORMAT_R16G16B16A16_SFLOAT, true);    
-    NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], targetSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
+    // Depth is at render resolution (sourceSize) since it's written by checkerboard_interleave at that resolution
+    NVSDK_NGX_Resource_VK depthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_DEPTH], qvk.images_views[VKPT_IMG_DLSS_DEPTH], sourceSize, VK_FORMAT_R32_SFLOAT, false);
     NVSDK_NGX_Resource_VK rayLengthResource = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAY_LENGTH], qvk.images_views[VKPT_IMG_DLSS_RAY_LENGTH], sourceSize, VK_FORMAT_R32G32B32A32_SFLOAT, false);
     NVSDK_NGX_Resource_VK transparentResoruce = ToNGXResource(qvk.images[VKPT_IMG_DLSS_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK motionVec3D = ToNGXResource(qvk.images[VKPT_IMG_DLSS_3DMOTION_VECTOR], qvk.images_views[VKPT_IMG_DLSS_3DMOTION_VECTOR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK reflectMotion = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECT_MOTION], qvk.images_views[VKPT_IMG_DLSS_REFLECT_MOTION], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK albedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specular = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK metallic = ToNGXResource(qvk.images[VKPT_IMG_DLSS_METALLIC], qvk.images_views[VKPT_IMG_DLSS_METALLIC], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK roughness = ToNGXResource(qvk.images[VKPT_IMG_DLSS_ROUGHNESS], qvk.images_views[VKPT_IMG_DLSS_ROUGHNESS], sourceSize, VK_FORMAT_R8_UNORM, false);
+    NVSDK_NGX_Resource_VK metallic = ToNGXResource(qvk.images[VKPT_IMG_DLSS_METALLIC], qvk.images_views[VKPT_IMG_DLSS_METALLIC], sourceSize, VK_FORMAT_R8_UNORM, false);
     NVSDK_NGX_Resource_VK normal = ToNGXResource(qvk.images[VKPT_IMG_DLSS_NORMAL], qvk.images_views[VKPT_IMG_DLSS_NORMAL], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK materialid = ToNGXResource(qvk.images[VKPT_IMG_DLSS_MATERIALID], qvk.images_views[VKPT_IMG_DLSS_MATERIALID], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK materialid = ToNGXResource(qvk.images[VKPT_IMG_DLSS_MATERIALID], qvk.images_views[VKPT_IMG_DLSS_MATERIALID], sourceSize, VK_FORMAT_R8_UINT, false);
     NVSDK_NGX_Resource_VK emissive = ToNGXResource(qvk.images[VKPT_IMG_DLSS_EMISSIVE], qvk.images_views[VKPT_IMG_DLSS_EMISSIVE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK indirectAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_INDIRECT_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_INDIRECT_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK specularAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_SPECULAR_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_SPECULAR_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
     NVSDK_NGX_Resource_VK beforeTransparent = ToNGXResource(qvk.images[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], qvk.images_views[VKPT_IMG_DLSS_BEFORE_TRANSPARENT], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
-    NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK diffuseLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_DIFFUSE], sourceSize, VK_FORMAT_R16_SFLOAT, false);
+    NVSDK_NGX_Resource_VK specularLength = ToNGXResource(qvk.images[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], qvk.images_views[VKPT_IMG_DLSS_RAYLENGTH_SPECULAR], sourceSize, VK_FORMAT_R16_SFLOAT, false);
     NVSDK_NGX_Resource_VK reflectedAlbedo = ToNGXResource(qvk.images[VKPT_IMG_DLSS_REFLECTED_ALBEDO], qvk.images_views[VKPT_IMG_DLSS_REFLECTED_ALBEDO], sourceSize, VK_FORMAT_R16G16B16A16_SFLOAT, false);
 
     NVSDK_NGX_VK_GBuffer inBuffer = {
@@ -630,7 +630,7 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_INDIRECT_ALBEDO] = &indirectAlbedo;
     inBuffer.pInAttrib[NVSDK_NGX_GBUFFER_SPECULAR_ALBEDO] = &specularAlbedo;
 
-    bool denoiseMode = Cvar_Get("pt_dlss_dldn", "0", CVAR_ARCHIVE)->integer == 1;
+    bool denoiseMode = cvar_pt_dlssdn->integer == 1;
     NVSDK_NGX_Result res;
 
     if (denoiseMode) {
@@ -703,8 +703,17 @@ void DLSSApply(VkCommandBuffer cmd,  QVK_t qvk, struct DLSSRenderResolution resO
 
         if (NVSDK_NGX_FAILED(res))
         {
-            Com_EPrintf("DLSS: NGX_VULKAN_EVALUATE_DLSS_EXT fail: %d", (int)res);
+            Com_EPrintf("DLSS: NGX_VULKAN_EVALUATE_DLSS_EXT fail: %d\n", (int)res);
         }
+    }
+
+    // Debug: Log that evaluate was called
+    static int eval_count = 0;
+    if (++eval_count <= 5)
+    {
+        Com_Printf("DLSS: Evaluate called (frame %d), mode=%s, source=%dx%d, target=%dx%d\n", 
+            eval_count, denoiseMode ? "RR" : "SR",
+            sourceSize.Width, sourceSize.Height, targetSize.Width, targetSize.Height);
     }
 }
 

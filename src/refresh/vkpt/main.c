@@ -141,6 +141,7 @@ static vec3_t avg_envmap_color = { 0.f };
 static image_t *water_normal_texture = NULL;
 
 int num_accumulated_frames = 0;
+static qboolean dlss_needs_reset = qfalse; // Flag to signal DLSS history reset
 
 static bool frame_ready = false;
 
@@ -467,6 +468,7 @@ static VkExtent2D get_screen_image_extent(void)
 void vkpt_reset_accumulation()
 {
 	num_accumulated_frames = 0;
+	dlss_needs_reset = qtrue; // Signal DLSS to reset history next frame
 	vkpt_restir_di_invalidate_history();
 }
 
@@ -3007,7 +3009,7 @@ prepare_ubo(refdef_t *fd, mleaf_t* viewleaf, const reference_mode_t* ref_mode, c
 	ubo->pt_swap_checkerboard = 0;
 #ifdef CONFIG_USE_DLSS
 	ubo->pt_dlss = DLSSMode();
-	ubo->pt_dlssdn = DLSSModeDenoise();
+	// pt_dlssdn is handled by UBO_CVAR_LIST macro now
 #else
 	ubo->pt_dlss = 0;
 	ubo->pt_dlssdn = 0;
@@ -3504,6 +3506,16 @@ R_RenderFrame_RTX(refdef_t *fd)
 		VkCommandBuffer post_cmd_buf = vkpt_begin_command_buffer(&qvk.cmd_buffers_graphics);
 
 		BEGIN_PERF_MARKER(post_cmd_buf, PROFILER_ASVGF_FULL);
+#ifdef CONFIG_USE_DLSS
+		// When DLSS Ray Reconstruction is enabled, skip ASVGF denoiser and use compositing instead
+		// RR is a denoiser replacement and needs raw noisy path tracer output
+		if (DLSSEnabled() && DLSSModeDenoise() == 1)
+		{
+			// Always use compositing path for Ray Reconstruction - it needs raw noisy data
+			vkpt_compositing(post_cmd_buf);
+		}
+		else
+#endif
 		if (ref_mode.enable_denoiser)
 		{
 			vkpt_asvgf_filter(post_cmd_buf, cvar_pt_num_bounce_rays->value >= 0.5f);
@@ -3550,14 +3562,14 @@ R_RenderFrame_RTX(refdef_t *fd)
 			resObj.outputWidth = qvk.extent_unscaled.width;
 			resObj.outputHeight = qvk.extent_unscaled.height;
 
-			// Copy PT_ buffers to DLSS_ buffers for Ray Reconstruction
-			if (DLSSModeDenoise() == 1)
-			{
-				vkpt_dlss_rr_copy_buffers(post_cmd_buf);
-			}
+			// Note: PT_ to DLSS_ buffer copies now happen in checkerboard_interleave.comp
+			// for proper checkerboard offset handling when pt_dlssdn=1
 
 			QVKUniformBuffer_t *ubo = &vkpt_refdef.uniform_buffer;
-			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, qfalse);
+			// Only reset on explicit reset request (camera cuts/level loads), not every frame
+			qboolean reset = dlss_needs_reset;
+			DLSSApply(post_cmd_buf, qvk, resObj, ubo->sub_pixel_jitter, frame_time <= 0.f ? frame_wallclock_time : frame_time, reset);
+			dlss_needs_reset = qfalse; // Clear flag after use
 		}
 #endif
 
@@ -4303,10 +4315,6 @@ R_Init_RTX(bool total)
 	drs_init();
 	vkpt_fsr_init_cvars();
 
-#ifdef CONFIG_USE_DLSS
-	InitDLSSCvars();
-#endif
-
 	// Minimum NVIDIA driver version - this is a cvar in case something changes in the future,
 	// and the current test no longer works.
 	cvar_min_driver_version_nvidia = Cvar_Get("min_driver_version_nvidia", "460.82", 0);
@@ -4336,6 +4344,10 @@ R_Init_RTX(bool total)
 #define UBO_CVAR_DO(name, default_value) cvar_##name = Cvar_Get(#name, #default_value, 0);
 	UBO_CVAR_LIST
 #undef UBO_CVAR_LIST
+
+#ifdef CONFIG_USE_DLSS
+	InitDLSSCvars();  // Must come after UBO_CVAR_LIST since it uses cvar_pt_dlssdn
+#endif
 
 	cvar_flt_temporal_hf->changed = temporal_cvar_changed;
 	cvar_flt_temporal_lf->changed = temporal_cvar_changed;

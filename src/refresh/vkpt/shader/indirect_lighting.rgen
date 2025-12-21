@@ -110,6 +110,10 @@ indirect_lighting(
     vec3 primary_albedo, primary_base_reflectivity;
     get_reflectivity(primary_base_color.rgb, primary_metallic, primary_albedo, primary_base_reflectivity);
 
+	// DLSS-RR: Output indirect albedo for Ray Reconstruction
+	if(global_ubo.pt_dlssdn != 0)
+		imageStore(IMG_PT_INDIRECT_ALBEDO, ipos, vec4(primary_albedo, 0));
+
 	bool primary_is_weapon = (material_id & MATERIAL_FLAG_WEAPON) != 0;
 
 	float direct_specular_weight = smoothstep(
@@ -263,7 +267,25 @@ indirect_lighting(
 			// ReSTIR GI only: store zero distance to indicate invalid sample
 			imageStore(IMG_PT_VIEW_DIRECTION2, ipos, vec4(0));
 		}
+		
+		// DLSS-RR: Store max ray length for misses
+		if(global_ubo.pt_dlssdn != 0)
+		{
+			if(is_specular_ray)
+				imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX));
+			else
+				imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(PRIMARY_RAY_T_MAX));
+		}
 		return;
+	}
+
+	// DLSS-RR: Store hit distance for valid intersections
+	if(global_ubo.pt_dlssdn != 0)
+	{
+		if(is_specular_ray)
+			imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(ray_payload_geometry.hit_distance));
+		else
+			imageStore(IMG_PT_RAYLENGTH_DIFFUSE, ipos, vec4(ray_payload_geometry.hit_distance));
 	}
 
 	triangle = get_hit_triangle(ray_payload_geometry);

@@ -538,8 +538,16 @@ main()
 		imageStore(IMG_PT_VIEW_DEPTH_A, ipos, vec4(-PRIMARY_RAY_T_MAX));
 		imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, PRIMARY_RAY_T_MAX));
 		
+		// DLSS-RR: Store max ray length for reflection misses
+		if(global_ubo.pt_dlssdn != 0)
+			imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(PRIMARY_RAY_T_MAX));
+		
 		return;
 	}
+
+	// DLSS-RR: Store specular hit distance for valid reflection hits
+	if(global_ubo.pt_dlssdn != 0)
+		imageStore(IMG_PT_RAYLENGTH_SPECULAR, ipos, vec4(ray_payload_geometry.hit_distance));
 
 	// Throughput before extinction
 	imageStore(IMG_PT_GODRAYS_THROUGHPUT_DIST, ipos, vec4(throughput, ray_payload_geometry.hit_distance));
@@ -659,6 +667,11 @@ main()
 		primary_roughness, 
 		primary_emissive,
 		primary_specular_factor);
+
+	// DLSS-RR: Output reflected albedo for Ray Reconstruction (reflection surfaces only)
+	// correct_motion_vector: 1=reflection, 2=refraction
+	if(global_ubo.pt_dlssdn != 0 && correct_motion_vector == 1)
+		imageStore(IMG_PT_REFLECTED_ALBEDO, ipos, vec4(primary_base_color, 0.0));
 
 	primary_is_weapon = false;
 

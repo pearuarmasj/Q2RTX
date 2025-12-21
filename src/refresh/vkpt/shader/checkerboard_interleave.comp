@@ -88,6 +88,14 @@ right before this shader is invoked, see function `vkpt_interleave`.
 
 #include "utils.glsl"
 
+// Normalize ray hit distance to 0-1 range for DLSS Ray Reconstruction
+// DLSS expects hit distances normalized to a consistent range
+float ConvertDistance(float rayLength) {
+    // Convert from world units to normalized 0-1 range
+    // Using typical Q2 scene scale: 1 unit = ~1 inch, max view distance ~10000 units
+    return clamp((rayLength - 1.0) / (10000.0 - 1.0), 0.0, 1.0);
+}
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 ivec2 get_input_position(out int other_side_offset)
@@ -180,16 +188,95 @@ void main()
 
     imageStore(IMG_FLAT_COLOR, opos, color);
 
-    if(use_center_mv)
+    // DLSS Ray Reconstruction buffer copies - need to happen in shader for proper checkerboard handling
+    if(global_ubo.pt_dlssdn != 0)
     {
-        imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos));
-        // Output depth for DLSS
-        imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_A, ipos));
+        if(use_center_mv)
+        {
+            vec4 motion = imageLoad(IMG_PT_MOTION, ipos);
+            imageStore(IMG_FLAT_MOTION, opos, motion);
+            // Copy all PT_ buffers to DLSS_ buffers with proper checkerboard handling
+            imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, ipos));
+            imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, motion);
+            imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, ipos).xy * 1000.0, 0, 0));
+            // Copy 2D motion vectors for DLSS (already in UV delta format)
+            imageStore(IMG_PT_DLSS_MOTION, opos, vec4(motion.xy, 0, 0));
+            imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, ipos));
+            imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, ipos));
+            imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, ipos));
+            // DLSS_ROUGHNESS is R8_UNORM (single channel)
+            imageStore(IMG_DLSS_ROUGHNESS, opos, vec4(imageLoad(IMG_PT_ROUGHNESS, ipos).x));
+            // DLSS_METALLIC is R8_UNORM (single channel)
+            imageStore(IMG_DLSS_METALLIC, opos, vec4(imageLoad(IMG_PT_METALLIC_RR, ipos).x));
+            imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL_RR, ipos));
+            // DLSS_MATERIALID is R8_UINT (single channel uint)
+            imageStore(IMG_DLSS_MATERIALID, opos, uvec4(uint(imageLoad(IMG_PT_MATERIALID, ipos).x)));
+            imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE_RR, ipos));
+            imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, ipos));
+            imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, ipos));
+            imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, ipos));
+            imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, ipos));
+            
+            // DLSS ray length images - normalize to 0-1 range using ConvertDistance
+            float diffuseRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, ipos).x);
+            float specularRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, ipos).x);
+            imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuseRayLen));
+            imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specularRayLen));
+        }
+        else
+        {
+            ivec2 offset_ipos = ipos + ivec2(other_side_offset, 0);
+            vec4 motion = imageLoad(IMG_PT_MOTION, offset_ipos);
+            imageStore(IMG_FLAT_MOTION, opos, motion);
+            // Copy all PT_ buffers to DLSS_ buffers with checkerboard offset
+            imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_SPLIT, offset_ipos));
+            imageStore(IMG_DLSS_3DMOTION_VECTOR, opos, motion);
+            imageStore(IMG_DLSS_REFLECT_MOTION, opos, vec4(imageLoad(IMG_PT_REFLECT_MOTION, offset_ipos).xy * 1000.0, 0, 0));
+            // Copy 2D motion vectors for DLSS (already in UV delta format)
+            imageStore(IMG_PT_DLSS_MOTION, opos, vec4(motion.xy, 0, 0));
+            imageStore(IMG_DLSS_TRANSPARENT, opos, imageLoad(IMG_PT_TRANSPARENT, offset_ipos));
+            imageStore(IMG_DLSS_ALBEDO, opos, imageLoad(IMG_PT_ALBEDO, offset_ipos));
+            imageStore(IMG_DLSS_SPECULAR, opos, imageLoad(IMG_PT_SPECULAR, offset_ipos));
+            // DLSS_ROUGHNESS is R8_UNORM (single channel)
+            imageStore(IMG_DLSS_ROUGHNESS, opos, vec4(imageLoad(IMG_PT_ROUGHNESS, offset_ipos).x));
+            // DLSS_METALLIC is R8_UNORM (single channel)
+            imageStore(IMG_DLSS_METALLIC, opos, vec4(imageLoad(IMG_PT_METALLIC_RR, offset_ipos).x));
+            imageStore(IMG_DLSS_NORMAL, opos, imageLoad(IMG_PT_NORMAL_RR, offset_ipos));
+            // DLSS_MATERIALID is R8_UINT (single channel uint)
+            imageStore(IMG_DLSS_MATERIALID, opos, uvec4(uint(imageLoad(IMG_PT_MATERIALID, offset_ipos).x)));
+            imageStore(IMG_DLSS_EMISSIVE, opos, imageLoad(IMG_PT_EMISSIVE_RR, offset_ipos));
+            imageStore(IMG_DLSS_INDIRECT_ALBEDO, opos, imageLoad(IMG_PT_INDIRECT_ALBEDO, offset_ipos));
+            imageStore(IMG_DLSS_SPECULAR_ALBEDO, opos, imageLoad(IMG_PT_SPECULAR_ALBEDO, offset_ipos));
+            imageStore(IMG_DLSS_BEFORE_TRANSPARENT, opos, imageLoad(IMG_PT_BEFORE_TRANSPARENT, offset_ipos));
+            imageStore(IMG_DLSS_REFLECTED_ALBEDO, opos, imageLoad(IMG_PT_REFLECTED_ALBEDO, offset_ipos));
+            
+            // DLSS ray length images - normalize to 0-1 range using ConvertDistance
+            float diffuseRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_DIFFUSE, offset_ipos).x);
+            float specularRayLen = ConvertDistance(imageLoad(IMG_PT_RAYLENGTH_SPECULAR, offset_ipos).x);
+            imageStore(IMG_DLSS_RAYLENGTH_DIFFUSE, opos, vec4(diffuseRayLen));
+            imageStore(IMG_DLSS_RAYLENGTH_SPECULAR, opos, vec4(specularRayLen));
+        }
     }
     else
     {
-        imageStore(IMG_FLAT_MOTION, opos, imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0)));
-        // Output depth for DLSS
-        imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_A, ipos + ivec2(other_side_offset, 0)));
+        // Standard path - just copy motion and depth
+        if(use_center_mv)
+        {
+            vec4 motion = imageLoad(IMG_PT_MOTION, ipos);
+            imageStore(IMG_FLAT_MOTION, opos, motion);
+            // Output depth for DLSS
+            imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_A, ipos));
+            // Copy 2D motion vectors for DLSS (needed for standard DLSS Super Resolution too)
+            imageStore(IMG_PT_DLSS_MOTION, opos, vec4(motion.xy, 0, 0));
+        }
+        else
+        {
+            vec4 motion = imageLoad(IMG_PT_MOTION, ipos + ivec2(other_side_offset, 0));
+            imageStore(IMG_FLAT_MOTION, opos, motion);
+            // Output depth for DLSS
+            imageStore(IMG_DLSS_DEPTH, opos, imageLoad(IMG_PT_VIEW_DEPTH_A, ipos + ivec2(other_side_offset, 0)));
+            // Copy 2D motion vectors for DLSS (needed for standard DLSS Super Resolution too)
+            imageStore(IMG_PT_DLSS_MOTION, opos, vec4(motion.xy, 0, 0));
+        }
     }
 }
