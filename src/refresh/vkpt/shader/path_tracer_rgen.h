@@ -1185,6 +1185,14 @@ bool restir_di_load_prev(
 		return false;
 	if(any(lessThan(reservoir_y_pos, vec2(0.0))) || any(greaterThanEqual(reservoir_y_pos, vec2(1.0))))
 		return false;
+
+	// CRITICAL: Clamp loaded W to prevent extreme values from corrupting combination.
+	// Neighbors in dark areas can have huge W values (due to tiny p_hat), and when
+	// these are combined with multiple spatial neighbors, the weights explode.
+	float max_w = global_ubo.pt_restir_max_w;
+	if(max_w > 0.0)
+		reservoir_W = min(reservoir_W, max_w);
+
 	return true;
 }
 
@@ -1915,12 +1923,16 @@ get_direct_illumination_restir_di(
 				float dist_depth = abs(depth_curr - depth_nb_prev) / max(abs(depth_curr), 1e-3);
 				if(depth_curr < 0)
 					dist_depth *= 0.25;
-				if(dist_depth > 0.1 || dot(geo_normal, geo_nb_prev) < 0.9)
+
+				// Tighter constraints for spatial reuse to reduce color bleed:
+				// - Depth: 5% relative difference (was 10%)
+				// - Normal: dot > 0.95 (~18 degrees, was 0.9 ~25 degrees)
+				if(dist_depth > 0.05 || dot(geo_normal, geo_nb_prev) < 0.95)
 					continue;
 
-				uvec2 prim_nb = texelFetch(TEX_PT_VISBUF_PRIM_B, nb, 0).xy;
-				if(any(notEqual(restir_prim_curr, prim_nb)))
-					continue;
+				// NOTE: For spatial reuse, we do NOT require same primitive!
+				// Spatial reuse shares light samples between NEARBY DIFFERENT surfaces.
+				// Only depth/normal similarity and same cluster are required.
 
 				uint cluster_nb = texelFetch(TEX_PT_CLUSTER_B, nb, 0).x;
 				if(cluster_nb == 0xffffu) cluster_nb = ~0u;
@@ -1971,6 +1983,32 @@ get_direct_illumination_restir_di(
 
 				if(!ok)
 					continue;
+
+				// Reject spatial samples with very low p_hat - they're not relevant for
+				// this surface and would cause color bleed (e.g., orange lamp light
+				// bleeding onto blue-lit surfaces).
+				if(p_hat < 1e-4)
+					continue;
+
+				// CRITICAL: Check visibility of spatial sample at CURRENT surface.
+				// This prevents the "ray of light in cave" issue where a neighbor outside
+				// shares a sun sample with a surface inside where sun is completely blocked.
+				// This is expensive (shadow ray per spatial neighbor) but necessary.
+				if(nb_kind == RESTIR_DI_KIND_POLYGONAL)
+				{
+					vec3 pos_on_light;
+					vec3 contrib_unused;
+					float pdfw_unused;
+					bool is_sky_unused;
+					if(restir_di_eval_polygonal_sample(cluster_idx, position, geo_normal,
+						nb_light_id, nb_y_pos, pos_on_light, contrib_unused, pdfw_unused, is_sky_unused))
+					{
+						Ray vis_ray = get_shadow_ray(position - view_direction * 0.01, pos_on_light, 0);
+						float vis = trace_shadow_ray(vis_ray, shadow_cull_mask);
+						if(vis <= 0.0)
+							continue;  // Light not visible from current surface - reject
+					}
+				}
 
 				float w = p_hat * nb_W * float(m_i);
 				float rng_resample = RESTIR_DI_GET_RNG();
@@ -2068,15 +2106,45 @@ get_direct_illumination_restir_di(
 	}
 
 	// -------------------------------------------------------------------------
-	// Simple normalization (BIAS_CORRECTION_OFF style)
-	// This is biased but stable - bias appears as darkening at edges, not brightening.
-	// Formula: W = w_sum / (M * selected_p_hat)
+	// BIAS_CORRECTION_BASIC / RAY_TRACED normalization
+	// Formula: W = (w_sum * pi) / (selected_p_hat * piSum)
+	// where pi = PDF at source surface, piSum = sum of (PDF at each source × M)
+	//
+	// For RAY_TRACED mode, we already validated visibility in the code above,
+	// which zeros out selected_source_p_hat if the light isn't visible from source.
 	// -------------------------------------------------------------------------
 	float W;
 	{
-		// Simple normalization - biased but stable
-		float denom = float(M) * selected_p_hat;
-		W = (denom > 1e-6) ? (w_sum / denom) : 0.0;
+		// pi = PDF of selected sample at its source surface
+		// If current frame won (selected_source == 0), use selected_p_hat
+		// If temporal/spatial won, use the (potentially visibility-adjusted) source p_hat
+		float pi = (selected_source == 0) ? selected_p_hat : selected_source_p_hat;
+
+		// piSum = sum of (PDF at each source × M) for all sources that contributed
+		// Start with current surface contribution
+		float piSum = selected_p_hat * float(M_current);
+
+		// Add temporal contribution
+		if(m_temporal_considered > 0)
+		{
+			// For temporal, we use p_hat_at_temporal which is the temporal sample
+			// evaluated at the current surface. For proper BASIC correction, we should
+			// evaluate the SELECTED sample at the temporal surface, but that's expensive.
+			// This approximation works when temporal and current have similar surfaces.
+			piSum += p_hat_at_temporal * float(m_temporal_considered);
+		}
+
+		// Add spatial contributions
+		if(m_spatial_considered > 0)
+		{
+			// Similar approximation for spatial - we use the accumulated p_hat values
+			// from each neighbor's sample at current surface, not selected at each neighbor.
+			piSum += p_hat_at_spatial_sum;
+		}
+
+		// Apply MIS-like normalization
+		float denom = selected_p_hat * piSum;
+		W = (denom > 1e-6) ? (w_sum * pi / denom) : 0.0;
 	}
 
 	if(global_ubo.pt_restir_max_w > 0.0)
