@@ -1222,6 +1222,44 @@ bool restir_di_pick_polygonal_light_uniform(uint list_idx, float r, out uint lig
 	return false;
 }
 
+// Compute Jacobian for spatial reuse: transforms solid angle measure from neighbor to current surface
+// J = G(current, light) / G(neighbor, light)
+// where G(x, y) = |cos(theta_y)| / dist(x, y)^2
+// Returns 0 if the transformation is degenerate.
+float restir_di_spatial_jacobian(
+	vec3 current_pos,
+	vec3 neighbor_pos,
+	vec3 light_pos,
+	vec3 light_normal)
+{
+	vec3 to_light_current = light_pos - current_pos;
+	vec3 to_light_neighbor = light_pos - neighbor_pos;
+
+	float dist_current_sq = dot(to_light_current, to_light_current);
+	float dist_neighbor_sq = dot(to_light_neighbor, to_light_neighbor);
+
+	// Avoid division by zero
+	if(dist_current_sq < 1e-8 || dist_neighbor_sq < 1e-8)
+		return 0.0;
+
+	vec3 L_current = to_light_current * inversesqrt(dist_current_sq);
+	vec3 L_neighbor = to_light_neighbor * inversesqrt(dist_neighbor_sq);
+
+	float cos_light_current = abs(dot(light_normal, -L_current));
+	float cos_light_neighbor = abs(dot(light_normal, -L_neighbor));
+
+	// Avoid division by zero
+	if(cos_light_neighbor < 1e-6)
+		return 0.0;
+
+	// J = (cos_current / dist_current^2) / (cos_neighbor / dist_neighbor^2)
+	//   = (cos_current * dist_neighbor^2) / (cos_neighbor * dist_current^2)
+	float jacobian = (cos_light_current * dist_neighbor_sq) / (cos_light_neighbor * dist_current_sq);
+
+	// Clamp to reasonable range to prevent fireflies
+	return clamp(jacobian, 0.0, 10.0);
+}
+
 bool restir_di_eval_polygonal_sample(
 	uint list_idx,
 	vec3 position,
@@ -1712,6 +1750,15 @@ get_direct_illumination_restir_di(
 	bool want_temporal = (global_ubo.pt_restir_temporal > 0.5);
 	bool want_spatial = (global_ubo.pt_restir_spatial > 0.5);
 
+	// Specular rejection: Skip temporal reuse for glossy/specular surfaces (roughness < 0.25)
+	// to prevent ghosting from reprojected specular highlights that don't track correctly.
+	// This follows Lumen's pattern where temporal reuse is skipped for specular surfaces.
+	const float SPECULAR_ROUGHNESS_THRESHOLD = 0.25;
+	if(roughness < SPECULAR_ROUGHNESS_THRESHOLD)
+	{
+		want_temporal = false;
+	}
+
 	// Cache current hit identity for robust reuse rejection.
 	uvec2 restir_prim_curr = texelFetch(TEX_PT_VISBUF_PRIM_A, ipos, 0).xy;
 
@@ -1947,7 +1994,14 @@ get_direct_illumination_restir_di(
 				if(!restir_di_load_prev(nb, cluster_idx, nb_kind, nb_light_id, nb_W, nb_M, nb_y_pos))
 					continue;
 
-				int m_i = min(nb_M, RESTIR_DI_M_CLAMP);
+				// FIX: Don't clamp M during accumulation - clamp only at storage
+				// Clamping here breaks weight normalization because nb_W was computed with actual M
+				int m_i = nb_M;
+
+				// Get neighbor surface position for Jacobian computation
+				vec4 nb_pos_mat = texelFetch(TEX_PT_SHADING_POSITION, nb, 0);
+				vec3 neighbor_surface_pos = nb_pos_mat.xyz;
+
 				float p_hat;
 				bool ok = false;
 				if(nb_kind == RESTIR_DI_KIND_POLYGONAL)
@@ -1994,6 +2048,10 @@ get_direct_illumination_restir_di(
 				// This prevents the "ray of light in cave" issue where a neighbor outside
 				// shares a sun sample with a surface inside where sun is completely blocked.
 				// This is expensive (shadow ray per spatial neighbor) but necessary.
+				vec3 light_pos_for_jacobian = vec3(0);
+				vec3 light_normal_for_jacobian = vec3(0);
+				bool have_jacobian_data = false;
+
 				if(nb_kind == RESTIR_DI_KIND_POLYGONAL)
 				{
 					vec3 pos_on_light;
@@ -2007,10 +2065,42 @@ get_direct_illumination_restir_di(
 						float vis = trace_shadow_ray(vis_ray, shadow_cull_mask);
 						if(vis <= 0.0)
 							continue;  // Light not visible from current surface - reject
+
+						// Store light data for Jacobian computation
+						light_pos_for_jacobian = pos_on_light;
+						LightPolygon light_poly = get_light_polygon(nb_light_id);
+						// Compute light normal from triangle
+						vec3 e1 = light_poly.positions[1] - light_poly.positions[0];
+						vec3 e2 = light_poly.positions[2] - light_poly.positions[0];
+						light_normal_for_jacobian = normalize(cross(e1, e2));
+						have_jacobian_data = true;
 					}
 				}
+				else if(nb_kind == RESTIR_DI_KIND_SUN)
+				{
+					// FIX: Add sun visibility check for spatial reuse
+					// Without this, sun samples from outdoor neighbors bleed into indoor surfaces
+					vec3 sun_dir = global_ubo.sun_direction;
+					Ray sun_ray = get_shadow_ray(position + geo_normal * 0.01,
+						position + sun_dir * 10000.0, 0);
+					float sun_vis = trace_shadow_ray(sun_ray, shadow_cull_mask);
+					if(sun_vis <= 0.0)
+						continue;  // Sun not visible from current surface - reject
+				}
 
-				float w = p_hat * nb_W * float(m_i);
+				// FIX: Apply Jacobian correction for spatial reuse
+				// This transforms the solid angle measure from neighbor to current surface
+				float jacobian = 1.0;
+				if(have_jacobian_data)
+				{
+					jacobian = restir_di_spatial_jacobian(position, neighbor_surface_pos,
+						light_pos_for_jacobian, light_normal_for_jacobian);
+					// Reject degenerate cases
+					if(jacobian <= 0.0 || jacobian > 10.0)
+						continue;
+				}
+
+				float w = p_hat * nb_W * float(m_i) * jacobian;
 				float rng_resample = RESTIR_DI_GET_RNG();
 
 				// CRITICAL: Track ALL spatial contributions for piSum REGARDLESS of whether they win!
@@ -2106,45 +2196,50 @@ get_direct_illumination_restir_di(
 	}
 
 	// -------------------------------------------------------------------------
-	// BIAS_CORRECTION_BASIC / RAY_TRACED normalization
-	// Formula: W = (w_sum * pi) / (selected_p_hat * piSum)
-	// where pi = PDF at source surface, piSum = sum of (PDF at each source × M)
+	// Pairwise MIS Normalization
 	//
-	// For RAY_TRACED mode, we already validated visibility in the code above,
-	// which zeros out selected_source_p_hat if the light isn't visible from source.
+	// Instead of full BASIC correction (which requires evaluating selected sample
+	// at ALL source surfaces), we use pairwise MIS that only considers:
+	// 1. The current surface
+	// 2. The winning source surface (if reused from temporal/spatial)
+	//
+	// Formula: W = w_sum / (M_current * p_hat_current + M_source * p_hat_source)
+	//
+	// This is more robust than the approximation-based BASIC correction and
+	// handles the common case where only current + one reuse source matter.
 	// -------------------------------------------------------------------------
 	float W;
 	{
-		// pi = PDF of selected sample at its source surface
-		// If current frame won (selected_source == 0), use selected_p_hat
+		// p_hat at current surface (for the selected sample)
+		float p_hat_current = selected_p_hat;
+
+		// p_hat at source surface (for the selected sample)
+		// If current frame won (selected_source == 0), source = current
 		// If temporal/spatial won, use the (potentially visibility-adjusted) source p_hat
-		float pi = (selected_source == 0) ? selected_p_hat : selected_source_p_hat;
+		float p_hat_source = (selected_source == 0) ? selected_p_hat : selected_source_p_hat;
 
-		// piSum = sum of (PDF at each source × M) for all sources that contributed
-		// Start with current surface contribution
-		float piSum = selected_p_hat * float(M_current);
-
-		// Add temporal contribution
-		if(m_temporal_considered > 0)
+		// Pairwise MIS denominator
+		// For current-frame samples: both p_hats are equal, so denom = p_hat * M
+		// For reused samples: accounts for difference in p_hat between surfaces
+		float denom;
+		if(selected_source == 0)
 		{
-			// For temporal, we use p_hat_at_temporal which is the temporal sample
-			// evaluated at the current surface. For proper BASIC correction, we should
-			// evaluate the SELECTED sample at the temporal surface, but that's expensive.
-			// This approximation works when temporal and current have similar surfaces.
-			piSum += p_hat_at_temporal * float(m_temporal_considered);
+			// Current frame won - simple case
+			denom = p_hat_current * float(M);
+		}
+		else
+		{
+			// Reused sample won - pairwise MIS between current and source
+			// Weight by M contributions from each
+			float m_source = float(selected_source_m);
+			float m_other = float(M) - m_source;  // All other contributions (current + other reuse)
+
+			// Pairwise: consider current surface and source surface
+			// The source's p_hat was validated (visibility check), so use it directly
+			denom = p_hat_current * m_other + p_hat_source * m_source;
 		}
 
-		// Add spatial contributions
-		if(m_spatial_considered > 0)
-		{
-			// Similar approximation for spatial - we use the accumulated p_hat values
-			// from each neighbor's sample at current surface, not selected at each neighbor.
-			piSum += p_hat_at_spatial_sum;
-		}
-
-		// Apply MIS-like normalization
-		float denom = selected_p_hat * piSum;
-		W = (denom > 1e-6) ? (w_sum * pi / denom) : 0.0;
+		W = (denom > 1e-6) ? (w_sum / denom) : 0.0;
 	}
 
 	if(global_ubo.pt_restir_max_w > 0.0)

@@ -139,17 +139,19 @@ void main()
         // Skip invalid surfaces
         if (neighborMaterial == 0)
             continue;
-        
+
         vec3 neighborNormal = decode_normal(texelFetch(TEX_PT_NORMAL_A, neighborPos, 0).x);
         float neighborDepth = texelFetch(TEX_PT_VIEW_DEPTH_A, neighborPos, 0).x;
-        
-        // Check surface similarity
-        bool surfaceMatch = restirGI_areSurfacesSimilar(
+
+        // Check surface similarity including material type
+        // This follows Lumen's pattern to prevent GI bleeding between different material types
+        bool surfaceMatch = restirGI_areSurfacesSimilarWithMaterial(
             currentNormal, neighborNormal,
             currentDepth, neighborDepth,
+            material_id, neighborMaterial,
             global_ubo.pt_restir_gi_normal_threshold,
             global_ubo.pt_restir_gi_depth_threshold);
-        
+
         if (!surfaceMatch)
             continue;
         

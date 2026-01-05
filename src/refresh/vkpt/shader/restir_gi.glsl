@@ -353,13 +353,45 @@ bool restirGI_areSurfacesSimilar(
     float normalDot = dot(normalA, normalB);
     if (normalDot < normalThreshold)
         return false;
-    
+
     // Depth similarity (relative threshold)
     float depthDiff = abs(depthA - depthB);
     float maxDepth = max(abs(depthA), abs(depthB));
     if (depthDiff > depthThreshold * maxDepth)
         return false;
-    
+
+    return true;
+}
+
+// Material kind mask for similarity comparisons (upper 8 bits of material ID)
+#define RESTIR_GI_MATERIAL_KIND_MASK 0xFF000000u
+
+// Extended similarity check including material ID (following Lumen's pattern)
+// Material matching is important to prevent GI bleeding between different surface types
+bool restirGI_areSurfacesSimilarWithMaterial(
+    vec3 normalA, vec3 normalB,
+    float depthA, float depthB,
+    uint materialA, uint materialB,
+    float normalThreshold,
+    float depthThreshold)
+{
+    // Material ID check - surfaces with different materials should not share samples
+    // This prevents GI bleeding between e.g., metallic and diffuse surfaces
+    // Compare material KIND (upper bits) to allow similar materials to share
+    if ((materialA & RESTIR_GI_MATERIAL_KIND_MASK) != (materialB & RESTIR_GI_MATERIAL_KIND_MASK))
+        return false;
+
+    // Normal similarity (from Lumen: 25 degree angle threshold)
+    float normalDot = dot(normalA, normalB);
+    if (normalDot < normalThreshold)
+        return false;
+
+    // Depth similarity (relative threshold)
+    float depthDiff = abs(depthA - depthB);
+    float maxDepth = max(abs(depthA), abs(depthB));
+    if (depthDiff > depthThreshold * maxDepth)
+        return false;
+
     return true;
 }
 

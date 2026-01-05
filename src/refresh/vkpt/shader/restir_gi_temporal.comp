@@ -129,7 +129,10 @@ void main()
         float radLuminance = texelFetch(TEX_PT_BOUNCE_THROUGHPUT, ipos, 0).w;
 
         // Reconstruct approximate radiance (grayscale based on luminance)
-        // The exact color is lost, but luminance is what matters for importance sampling
+        // TODO: For better color accuracy, store full RGB radiance in indirect_lighting.rgen
+        // Currently using luminance only, which works for importance sampling but loses color
+        // information. Full RGB storage would require additional texture binding.
+        // Lumen stores RGB16F radiance for better quality - see restirgi_commons.glsl
         vec3 giSampleRadiance = vec3(radLuminance);
 
         if (radLuminance > 0.0)
@@ -172,11 +175,13 @@ void main()
             {
                 vec3 prevNormal = decode_normal(texelFetch(TEX_PT_NORMAL_B, prevPos, 0).x);
                 float prevDepth = texelFetch(TEX_PT_VIEW_DEPTH_B, prevPos, 0).x;
-                
-                // Check surface similarity
-                bool surfaceMatch = restirGI_areSurfacesSimilar(
+
+                // Check surface similarity including material type
+                // This follows Lumen's pattern to prevent GI bleeding between different material types
+                bool surfaceMatch = restirGI_areSurfacesSimilarWithMaterial(
                     currentNormal, prevNormal,
                     currentDepth, prevDepth,
+                    material_id, prevMaterial,
                     global_ubo.pt_restir_gi_normal_threshold,
                     global_ubo.pt_restir_gi_depth_threshold);
                 
@@ -200,6 +205,13 @@ void main()
                         
                         if (restirGI_validateJacobian(jacobian) && targetPdf > 0.0)
                         {
+                            // TODO: Add visibility validation via ray query
+                            // Ideally we would trace a shadow ray from currentPos to prevReservoir.position
+                            // to verify the GI sample is actually visible from the current surface.
+                            // This requires VK_KHR_ray_query extension in compute shaders.
+                            // For now, we rely on surface similarity checks and Jacobian validation
+                            // to filter out most invalid reuse cases.
+
                             // Clamp M to prevent over-accumulation
                             uint maxHistory = uint(global_ubo.pt_restir_gi_max_history);
                             uint clampedM = min(prevReservoir.M, maxHistory);
